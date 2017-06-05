@@ -49,18 +49,3 @@
       prompt: "Enter your github password."
       private: yes
 
-#- hosts: dev
-#  remote_user: '{{ sudouser }}'
-#  sudo: yes
-#  roles:
-#    - dev
-#
-#  vars_prompt:
-#    - name: "git_username"
-#      prompt: "Enter your github username."
-#      private: yes
-#
-#    - name: "git_password"
-#      prompt: "Enter your github password."
-#      private: yes
-

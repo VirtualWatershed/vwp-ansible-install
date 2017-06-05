@@ -1,14 +1,12 @@
 [postgres]
-129.24.63.125
+x.x.x.x
 
 [elasticsearch]
-129.24.63.125
+x.x.x.x
 
 [mongodb]
-129.24.63.125
+x.x.x.x
 
 [gstore]
-129.24.63.125
+x.x.x.x
 
-#[dev]
-#129.24.63.125
