@@ -30,6 +30,10 @@
   sudo: yes
   roles:
     - postgres
+  vars_prompt:
+    - name: "admin_email"
+      prompt: "Enter a valid admin e-mail address"
+      private: no
 
 - hosts: gstore
   remote_user: '{{ sudouser }}'
