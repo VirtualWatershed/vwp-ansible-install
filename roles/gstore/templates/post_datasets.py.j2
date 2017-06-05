@@ -1,0 +1,74 @@
+#!/usr/local/bin/python
+
+import os
+import glob
+import json
+from lxml import etree
+import requests
+
+'''
+Generic gstore import script 
+
+
+****LOADS FILE/RASTER OBJECTS ONLY****
+
+Vector/tabular data requires additional processing to convert
+from a file object to a fully featured VECTOR or TABLE object.
+See XXXXXXXXX.py for that process.
+
+'''
+
+# change this to point to the local gstore instance
+# also, change myapp to an app registered in the local instance
+{% for host in groups['gstore'] %}
+INSERT_DATASET_URL = 'http://{{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}/gstore_v3/apps/vwp/datasets'
+{% endfor %}
+
+
+#TODO: change the local dir
+# grab the sample datasets from the local dir
+#json_files = glob.glob('/geodata/sample_datasets/jsons/*.json')
+json_files = ['/geodata/sample_datasets/jsons/wilderness2014.json']
+
+for json_file in json_files:
+    print 'PROCESSING: ', json_file
+    with open(json_file, 'r') as f:
+        post_data = json.loads(f.read())
+
+    # get the metadata path from the json
+    # make sure the xml is properly encoded
+    # before replacing the link with the xml (as string)
+    xml = etree.parse(post_data['metadata']['xml'])
+    post_data['metadata']['xml'] = etree.tostring(xml, encoding=unicode)
+
+    apps = post_data['apps']
+
+    if len(apps) > 1:
+        the_url = INSERT_DATASET_URL % {'app':apps[0]}
+        post_data.update({"apps": apps[1:]})
+    else:
+        the_url = INSERT_DATASET_URL % {'app':apps[0]}
+        post_data.update({"apps": []})
+
+    post_data['active'] = 'true'
+
+    # post the dataset
+    result = requests.put(INSERT_DATASET_URL, data=json.dumps(post_data), auth=('newmexico', 'yeykbemdidkac3QuiEvAnkAb}'))
+    if result.status_code != 200:
+        print '\tFAILED INSERT', result.status_code
+        print '\t', result.content
+        continue
+
+    # the uuid to the new dataset
+    new_dataset = result.content
+    print '\tDATASET INSERTED: ', new_dataset
+
+    # save this uuid, mostly for the vector/table inserts, for 
+    # additional processing
+    with open(os.path.join('/geodata/sample_datasets/logs/dataset_insert', json_file.split('/')[-1].replace('.json', '_rsp.json')), 'w') as f:
+        f.write('{"dataset_uuid": "%s"}' % new_dataset)
+
+    
+    
+
+

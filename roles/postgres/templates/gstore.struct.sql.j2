@@ -1,0 +1,6398 @@
+--
+-- PostgreSQL database dump
+--
+
+SET statement_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SET check_function_bodies = false;
+SET client_min_messages = warning;
+
+--
+-- Name: gstoredata; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA gstoredata;
+
+
+ALTER SCHEMA gstoredata OWNER TO postgres;
+
+--
+-- Name: topology; Type: SCHEMA; Schema: -; Owner: postgres
+--
+
+CREATE SCHEMA topology;
+
+
+ALTER SCHEMA topology OWNER TO postgres;
+
+--
+-- Name: plpgsql; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS plpgsql WITH SCHEMA pg_catalog;
+
+
+--
+-- Name: EXTENSION plpgsql; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION plpgsql IS 'PL/pgSQL procedural language';
+
+
+--
+-- Name: postgis; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS postgis WITH SCHEMA public;
+
+
+--
+-- Name: EXTENSION postgis; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION postgis IS 'PostGIS geometry, geography, and raster spatial types and functions';
+
+
+--
+-- Name: postgis_topology; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS postgis_topology WITH SCHEMA topology;
+
+
+--
+-- Name: EXTENSION postgis_topology; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION postgis_topology IS 'PostGIS topology spatial types and functions';
+
+
+SET search_path = public, pg_catalog;
+
+--
+-- Name: ghstore; Type: SHELL TYPE; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE TYPE ghstore;
+
+
+--
+-- Name: ghstore_in(cstring); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_in(cstring) RETURNS ghstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_in';
+
+
+ALTER FUNCTION public.ghstore_in(cstring) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore_out(ghstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_out(ghstore) RETURNS cstring
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_out';
+
+
+ALTER FUNCTION public.ghstore_out(ghstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore; Type: TYPE; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE TYPE ghstore (
+    INTERNALLENGTH = variable,
+    INPUT = ghstore_in,
+    OUTPUT = ghstore_out,
+    ALIGNMENT = int4,
+    STORAGE = plain
+);
+
+
+ALTER TYPE public.ghstore OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore; Type: SHELL TYPE; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE TYPE hstore;
+
+
+--
+-- Name: hstore_in(cstring); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_in(cstring) RETURNS hstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_in';
+
+
+ALTER FUNCTION public.hstore_in(cstring) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_out(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_out(hstore) RETURNS cstring
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_out';
+
+
+ALTER FUNCTION public.hstore_out(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_recv(internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_recv(internal) RETURNS hstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_recv';
+
+
+ALTER FUNCTION public.hstore_recv(internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_send(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_send(hstore) RETURNS bytea
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_send';
+
+
+ALTER FUNCTION public.hstore_send(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore; Type: TYPE; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE TYPE hstore (
+    INTERNALLENGTH = variable,
+    INPUT = hstore_in,
+    OUTPUT = hstore_out,
+    RECEIVE = hstore_recv,
+    SEND = hstore_send,
+    ALIGNMENT = int4,
+    STORAGE = extended
+);
+
+
+ALTER TYPE public.hstore OWNER TO {{ gstoreuser }};
+
+SET search_path = gstoredata, pg_catalog;
+
+--
+-- Name: create_vector_view(integer); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION create_vector_view(did integer) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $_$
+DECLARE t boolean;
+DECLARE s varchar;
+DECLARE geom_type varchar;
+DECLARE i ALIAS for $1;
+DECLARE dataset RECORD;
+DECLARE feature_attr RECORD;
+DECLARE feature_attrs varchar;
+BEGIN
+    SELECT INTO dataset * FROM datasets WHERE id = i;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Dataset with id % not found', i;
+    END IF;
+    EXECUTE 'DELETE FROM geometry_columns WHERE f_table_name = ''' || dataset.basename || ''' ';
+    IF EXISTS (SELECT viewname FROM get_view WHERE viewname = dataset.basename ) THEN
+        EXECUTE 'DROP VIEW ' || dataset.basename;
+    END IF;
+    RAISE NOTICE 'dataset %' , dataset;
+    feature_attrs = 'gid , geom  ';
+    FOR feature_attr IN SELECT * FROM features_attributes WHERE dataset_id = i ORDER BY attribute_id LOOP
+        IF feature_attr.value_column = 'geom' THEN
+            geom_type = feature_attr.attribute_type;
+        ELSE
+            s = ' values[' || feature_attr.array_id || '] AS ' || feature_attr.name;
+            feature_attrs = feature_attrs || ', ' || s;
+        END IF;
+    END LOOP;
+
+    s = 'SELECT ' || feature_attrs || ' FROM shapes WHERE dataset_id = ' || i;
+    s = 'CREATE VIEW ' || dataset.basename || ' AS  ' || s ;
+    RAISE NOTICE 'Creating view: % ' , s;
+    EXECUTE s;
+    RAISE NOTICE 'Registering geometry: % ', geom_type;
+    EXECUTE 'INSERT INTO geometry_columns (f_table_catalog,
+                f_table_schema,
+                                  f_table_name,
+                                  f_geometry_column, 
+                                  coord_dimension,
+                                  srid , 
+                              type)
+        VALUES ( '''',''public'',''' || dataset.basename || ''',''geom'', '||  split_part(geom_type,'__',2) || ', ' || split_part(geom_type,'__',3) || ', ''' || split_part(geom_type,'__',1) || ''')';
+    EXECUTE 'UPDATE datasets SET geomtype =''' || split_part(geom_type,'__',1) || ''' WHERE id = ' || dataset.id;
+    RETURN t;
+END;
+$_$;
+
+
+ALTER FUNCTION gstoredata.create_vector_view(did integer) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: delete_dataset(integer); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION delete_dataset(did integer) RETURNS boolean
+    LANGUAGE plpgsql
+    AS $_$
+DECLARE t boolean;
+DECLARE s varchar;
+DECLARE i ALIAS for $1;
+DECLARE value_table RECORD;
+DECLARE dataset RECORD;
+BEGIN
+        EXECUTE 'DELETE FROM shapes WHERE dataset_id = ' || i;
+        EXECUTE 'DELETE FROM features_attributes WHERE dataset_id = ' || i;
+        SELECT INTO dataset * FROM datasets WHERE id = i;
+        IF EXISTS (SELECT viewname FROM get_view WHERE viewname = dataset.basename ) THEN
+                EXECUTE 'DROP VIEW ' || dataset.basename;
+        END IF;
+
+        s = 'gid_dataset_' || i;
+        IF EXISTS (SELECT name FROM get_index WHERE name = s ) THEN
+                RAISE NOTICE 'Deleting index %' ,s;
+                EXECUTE 'DROP INDEX ' || s;
+        END IF;
+        EXECUTE 'DELETE FROM datasets WHERE id = ' || i;
+        EXECUTE 'DELETE FROM geometry_columns WHERE f_table_name = ''' || dataset.basename || ''' ';
+        t = True;
+        RETURN t;
+END;
+$_$;
+
+
+ALTER FUNCTION gstoredata.delete_dataset(did integer) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: geo_relevance(public.geometry, public.geometry); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION geo_relevance(h public.geometry, s public.geometry) RETURNS numeric
+    LANGUAGE plpgsql
+    AS $$
+DECLARE a_int numeric;
+DECLARE a_s numeric;
+DECLARE a_h numeric;
+DECLARE min_area numeric;
+BEGIN
+ min_area = 0.00001;
+ SELECT area(s) INTO a_s;
+ SELECT area(h) into a_h;
+
+ IF a_h < min_area THEN
+   a_h = min_area;
+ END IF;
+
+ IF a_s < min_area THEN
+   a_s = min_area;
+ END IF;
+
+ IF a_h > min_area AND a_s > min_area THEN
+   SELECT area(intersection(s,h)) INTO a_int;
+ ELSE
+   a_int = min_area;
+ END IF;
+
+ RETURN (a_int * a_int)/(a_s * a_h);
+
+END;
+$$;
+
+
+ALTER FUNCTION gstoredata.geo_relevance(h public.geometry, s public.geometry) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: gstore_set_box_from_geom(public.geometry); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION gstore_set_box_from_geom(geom public.geometry) RETURNS numeric[]
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RETURN ARRAY[st_xmin(geom), st_ymin(geom), st_xmax(geom), st_ymax(geom)];
+
+END;
+$$;
+
+
+ALTER FUNCTION gstoredata.gstore_set_box_from_geom(geom public.geometry) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: gstore_utm_geom(public.geometry); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION gstore_utm_geom(geom public.geometry) RETURNS public.geometry
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+   RETURN transform(setsrid(geom, 4326), 26913);
+
+END;
+$$;
+
+
+ALTER FUNCTION gstoredata.gstore_utm_geom(geom public.geometry) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: intersect_geolookup(integer, character varying); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION intersect_geolookup(dataset_id integer, lut_type character varying) RETURNS SETOF character varying[]
+    LANGUAGE plpgsql
+    AS $$
+
+BEGIN
+	RETURN QUERY
+		SELECT array_agg(g.description) as intersections
+		FROM gstoredata.geolookups g
+		INNER JOIN gstoredata.datasets d
+		ON (d.geom && g.geom AND ST_Intersects(d.geom, g.geom))
+		WHERE d.id = dataset_id and g.what = lut_type
+		GROUP BY d.id;
+END;
+$$;
+
+
+ALTER FUNCTION gstoredata.intersect_geolookup(dataset_id integer, lut_type character varying) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: newest_results_by_category(integer, timestamp without time zone); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION newest_results_by_category(max_datasets integer, min_date timestamp without time zone) RETURNS TABLE(category_id integer, dataset_id integer)
+    LANGUAGE plpgsql
+    AS $$
+-- DECLARE 
+-- 	ref refcursor;  --the cursor variable
+BEGIN
+	RETURN QUERY
+		SELECT grouped.cat_id, grouped.id --, grouped.uuid, grouped.description, grouped.dateadded --(just return the category id and the dataset id
+		from
+		(
+			select c.id as cat_id, d.id, d.uuid, d.description, d.dateadded, c.theme, c.subtheme, c.groupname, 
+				row_number() OVER (PARTITION BY c.id ORDER BY d.dateadded desc)
+			from gstoredata.categories c, gstoredata.categories_datasets cd, gstoredata.datasets d
+			where cd.dataset_id = d.id and cd.category_id = c.id 
+				and d.dateadded >= min_date
+		) grouped
+		where row_number <= max_datasets
+		order by grouped.cat_id, grouped.dateadded ASC;
+END;
+$$;
+
+
+ALTER FUNCTION gstoredata.newest_results_by_category(max_datasets integer, min_date timestamp without time zone) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: newest_results_by_category(integer, timestamp without time zone, character varying); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION newest_results_by_category(max_datasets integer, min_date timestamp without time zone, app_to_search character varying) RETURNS TABLE(category_id integer, dataset_id integer)
+    LANGUAGE plpgsql
+    AS $$
+-- DECLARE 
+-- 	ref refcursor;  --the cursor variable
+BEGIN
+	RETURN QUERY
+		SELECT grouped.cat_id, grouped.id --, grouped.uuid, grouped.description, grouped.dateadded --(just return the category id and the dataset id
+		from
+		(
+			select c.id as cat_id, d.id, d.uuid, d.description, d.dateadded, c.theme, c.subtheme, c.groupname, 
+				row_number() OVER (PARTITION BY c.id ORDER BY d.dateadded desc)
+			from gstoredata.categories c, gstoredata.categories_datasets cd, gstoredata.datasets d
+			where cd.dataset_id = d.id and cd.category_id = c.id 
+				and d.dateadded >= min_date and app_to_search = ANY(d.apps_cache)
+		) grouped
+		where row_number <= max_datasets
+		order by grouped.cat_id, grouped.dateadded ASC;
+END;
+$$;
+
+
+ALTER FUNCTION gstoredata.newest_results_by_category(max_datasets integer, min_date timestamp without time zone, app_to_search character varying) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: purge_empty_vector_datasets(); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION purge_empty_vector_datasets() RETURNS boolean
+    LANGUAGE plpgsql
+    AS $$
+DECLARE t BOOLEAN;
+DECLARE dataset record;
+BEGIN
+        FOR dataset IN SELECT id FROM datasets WHERE NOT EXISTS(SELECT 1 FROM shapes WHERE dataset_id = datasets.id) LOOP
+                EXECUTE 'SELECT delete_dataset( ' ||  dataset.id || ')';
+        END LOOP;
+        RETURN t;
+END;
+$$;
+
+
+ALTER FUNCTION gstoredata.purge_empty_vector_datasets() OWNER TO {{ gstoreuser }};
+
+--
+-- Name: update_datasets_orig_epsg_from_raster_source(); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION update_datasets_orig_epsg_from_raster_source() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+BEGIN
+UPDATE datasets SET orig_epsg = a.orig_epsg FROM 
+(SELECT dataset_id, source.orig_epsg 
+  FROM datasets_sources, source 
+ WHERE source_id = source.id 
+   AND source.extension ='tif' 
+           AND source.zipgroup = 'tif' 
+GROUP BY dataset_id, source.orig_epsg) a 
+WHERE a.dataset_id = id;
+END;
+$$;
+
+
+ALTER FUNCTION gstoredata.update_datasets_orig_epsg_from_raster_source() OWNER TO {{ gstoreuser }};
+
+--
+-- Name: update_modified_timestamp(); Type: FUNCTION; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION update_modified_timestamp() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+begin
+	NEW.date_modified = timezone('UTC'::text, now());
+	return NEW;
+end;
+$$;
+
+
+ALTER FUNCTION gstoredata.update_modified_timestamp() OWNER TO {{ gstoreuser }};
+
+SET search_path = public, pg_catalog;
+
+--
+-- Name: akeys(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION akeys(hstore) RETURNS text[]
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_akeys';
+
+
+ALTER FUNCTION public.akeys(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: avals(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION avals(hstore) RETURNS text[]
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_avals';
+
+
+ALTER FUNCTION public.avals(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: defined(hstore, text); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION defined(hstore, text) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_defined';
+
+
+ALTER FUNCTION public.defined(hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: delete(hstore, text); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION delete(hstore, text) RETURNS hstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_delete';
+
+
+ALTER FUNCTION public.delete(hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: delete(hstore, text[]); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION delete(hstore, text[]) RETURNS hstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_delete_array';
+
+
+ALTER FUNCTION public.delete(hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: delete(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION delete(hstore, hstore) RETURNS hstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_delete_hstore';
+
+
+ALTER FUNCTION public.delete(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: each(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION each(hs hstore, OUT key text, OUT value text) RETURNS SETOF record
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_each';
+
+
+ALTER FUNCTION public.each(hs hstore, OUT key text, OUT value text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: exist(hstore, text); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION exist(hstore, text) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_exists';
+
+
+ALTER FUNCTION public.exist(hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: exists_all(hstore, text[]); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION exists_all(hstore, text[]) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_exists_all';
+
+
+ALTER FUNCTION public.exists_all(hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: exists_any(hstore, text[]); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION exists_any(hstore, text[]) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_exists_any';
+
+
+ALTER FUNCTION public.exists_any(hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: fetchval(hstore, text); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION fetchval(hstore, text) RETURNS text
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_fetchval';
+
+
+ALTER FUNCTION public.fetchval(hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore_compress(internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_compress(internal) RETURNS internal
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_compress';
+
+
+ALTER FUNCTION public.ghstore_compress(internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore_consistent(internal, internal, integer, oid, internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_consistent(internal, internal, integer, oid, internal) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_consistent';
+
+
+ALTER FUNCTION public.ghstore_consistent(internal, internal, integer, oid, internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore_decompress(internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_decompress(internal) RETURNS internal
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_decompress';
+
+
+ALTER FUNCTION public.ghstore_decompress(internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore_penalty(internal, internal, internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_penalty(internal, internal, internal) RETURNS internal
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_penalty';
+
+
+ALTER FUNCTION public.ghstore_penalty(internal, internal, internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore_picksplit(internal, internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_picksplit(internal, internal) RETURNS internal
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_picksplit';
+
+
+ALTER FUNCTION public.ghstore_picksplit(internal, internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore_same(internal, internal, internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_same(internal, internal, internal) RETURNS internal
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_same';
+
+
+ALTER FUNCTION public.ghstore_same(internal, internal, internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ghstore_union(internal, internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION ghstore_union(internal, internal) RETURNS internal
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'ghstore_union';
+
+
+ALTER FUNCTION public.ghstore_union(internal, internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: gin_consistent_hstore(internal, smallint, internal, integer, internal, internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION gin_consistent_hstore(internal, smallint, internal, integer, internal, internal) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'gin_consistent_hstore';
+
+
+ALTER FUNCTION public.gin_consistent_hstore(internal, smallint, internal, integer, internal, internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: gin_extract_hstore(internal, internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION gin_extract_hstore(internal, internal) RETURNS internal
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'gin_extract_hstore';
+
+
+ALTER FUNCTION public.gin_extract_hstore(internal, internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: gin_extract_hstore_query(internal, internal, smallint, internal, internal); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION gin_extract_hstore_query(internal, internal, smallint, internal, internal) RETURNS internal
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'gin_extract_hstore_query';
+
+
+ALTER FUNCTION public.gin_extract_hstore_query(internal, internal, smallint, internal, internal) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hs_concat(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hs_concat(hstore, hstore) RETURNS hstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_concat';
+
+
+ALTER FUNCTION public.hs_concat(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hs_contained(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hs_contained(hstore, hstore) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_contained';
+
+
+ALTER FUNCTION public.hs_contained(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hs_contains(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hs_contains(hstore, hstore) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_contains';
+
+
+ALTER FUNCTION public.hs_contains(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore(text[]); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore(text[]) RETURNS hstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_from_array';
+
+
+ALTER FUNCTION public.hstore(text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore(record); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore(record) RETURNS hstore
+    LANGUAGE c IMMUTABLE
+    AS '$libdir/hstore', 'hstore_from_record';
+
+
+ALTER FUNCTION public.hstore(record) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore(text, text); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore(text, text) RETURNS hstore
+    LANGUAGE c IMMUTABLE
+    AS '$libdir/hstore', 'hstore_from_text';
+
+
+ALTER FUNCTION public.hstore(text, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore(text[], text[]); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore(text[], text[]) RETURNS hstore
+    LANGUAGE c IMMUTABLE
+    AS '$libdir/hstore', 'hstore_from_arrays';
+
+
+ALTER FUNCTION public.hstore(text[], text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_cmp(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_cmp(hstore, hstore) RETURNS integer
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_cmp';
+
+
+ALTER FUNCTION public.hstore_cmp(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_eq(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_eq(hstore, hstore) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_eq';
+
+
+ALTER FUNCTION public.hstore_eq(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_ge(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_ge(hstore, hstore) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_ge';
+
+
+ALTER FUNCTION public.hstore_ge(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_gt(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_gt(hstore, hstore) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_gt';
+
+
+ALTER FUNCTION public.hstore_gt(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_hash(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_hash(hstore) RETURNS integer
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_hash';
+
+
+ALTER FUNCTION public.hstore_hash(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_le(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_le(hstore, hstore) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_le';
+
+
+ALTER FUNCTION public.hstore_le(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_lt(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_lt(hstore, hstore) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_lt';
+
+
+ALTER FUNCTION public.hstore_lt(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_ne(hstore, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_ne(hstore, hstore) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_ne';
+
+
+ALTER FUNCTION public.hstore_ne(hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_to_array(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_to_array(hstore) RETURNS text[]
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_to_array';
+
+
+ALTER FUNCTION public.hstore_to_array(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_to_matrix(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_to_matrix(hstore) RETURNS text[]
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_to_matrix';
+
+
+ALTER FUNCTION public.hstore_to_matrix(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hstore_version_diag(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION hstore_version_diag(hstore) RETURNS integer
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_version_diag';
+
+
+ALTER FUNCTION public.hstore_version_diag(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: isdefined(hstore, text); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION isdefined(hstore, text) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_defined';
+
+
+ALTER FUNCTION public.isdefined(hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: isexists(hstore, text); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION isexists(hstore, text) RETURNS boolean
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_exists';
+
+
+ALTER FUNCTION public.isexists(hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: pgpool_regclass(cstring); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION pgpool_regclass(cstring) RETURNS oid
+    LANGUAGE c STRICT
+    AS '$libdir/pgpool-regclass', 'pgpool_regclass';
+
+
+ALTER FUNCTION public.pgpool_regclass(cstring) OWNER TO postgres;
+
+--
+-- Name: populate_record(anyelement, hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION populate_record(anyelement, hstore) RETURNS anyelement
+    LANGUAGE c IMMUTABLE
+    AS '$libdir/hstore', 'hstore_populate_record';
+
+
+ALTER FUNCTION public.populate_record(anyelement, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: skeys(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION skeys(hstore) RETURNS SETOF text
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_skeys';
+
+
+ALTER FUNCTION public.skeys(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: slice(hstore, text[]); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION slice(hstore, text[]) RETURNS hstore
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_slice_to_hstore';
+
+
+ALTER FUNCTION public.slice(hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: slice_array(hstore, text[]); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION slice_array(hstore, text[]) RETURNS text[]
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_slice_to_array';
+
+
+ALTER FUNCTION public.slice_array(hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: st_area(geography); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION st_area(geography) RETURNS double precision
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $_$SELECT ST_Area($1, true)$_$;
+
+
+ALTER FUNCTION public.st_area(geography) OWNER TO postgres;
+
+--
+-- Name: st_length(geography); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION st_length(geography) RETURNS double precision
+    LANGUAGE sql IMMUTABLE
+    AS $_$SELECT ST_Length($1, true)$_$;
+
+
+ALTER FUNCTION public.st_length(geography) OWNER TO postgres;
+
+--
+-- Name: st_length_spheroid3d(geometry, spheroid); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION st_length_spheroid3d(geometry, spheroid) RETURNS double precision
+    LANGUAGE c IMMUTABLE STRICT COST 100
+    AS '$libdir/postgis-2.0', 'LWGEOM_length_ellipsoid_linestring';
+
+
+ALTER FUNCTION public.st_length_spheroid3d(geometry, spheroid) OWNER TO postgres;
+
+--
+-- Name: svals(hstore); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION svals(hstore) RETURNS SETOF text
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/hstore', 'hstore_svals';
+
+
+ALTER FUNCTION public.svals(hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: tconvert(text, text); Type: FUNCTION; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE FUNCTION tconvert(text, text) RETURNS hstore
+    LANGUAGE c IMMUTABLE
+    AS '$libdir/hstore', 'hstore_from_text';
+
+
+ALTER FUNCTION public.tconvert(text, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: uuid_generate_v1(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_generate_v1() RETURNS uuid
+    LANGUAGE c STRICT
+    AS '$libdir/uuid-ossp', 'uuid_generate_v1';
+
+
+ALTER FUNCTION public.uuid_generate_v1() OWNER TO postgres;
+
+--
+-- Name: uuid_generate_v1mc(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_generate_v1mc() RETURNS uuid
+    LANGUAGE c STRICT
+    AS '$libdir/uuid-ossp', 'uuid_generate_v1mc';
+
+
+ALTER FUNCTION public.uuid_generate_v1mc() OWNER TO postgres;
+
+--
+-- Name: uuid_generate_v3(uuid, text); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_generate_v3(namespace uuid, name text) RETURNS uuid
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/uuid-ossp', 'uuid_generate_v3';
+
+
+ALTER FUNCTION public.uuid_generate_v3(namespace uuid, name text) OWNER TO postgres;
+
+--
+-- Name: uuid_generate_v4(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_generate_v4() RETURNS uuid
+    LANGUAGE c STRICT
+    AS '$libdir/uuid-ossp', 'uuid_generate_v4';
+
+
+ALTER FUNCTION public.uuid_generate_v4() OWNER TO postgres;
+
+--
+-- Name: uuid_generate_v5(uuid, text); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_generate_v5(namespace uuid, name text) RETURNS uuid
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/uuid-ossp', 'uuid_generate_v5';
+
+
+ALTER FUNCTION public.uuid_generate_v5(namespace uuid, name text) OWNER TO postgres;
+
+--
+-- Name: uuid_nil(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_nil() RETURNS uuid
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/uuid-ossp', 'uuid_nil';
+
+
+ALTER FUNCTION public.uuid_nil() OWNER TO postgres;
+
+--
+-- Name: uuid_ns_dns(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_ns_dns() RETURNS uuid
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/uuid-ossp', 'uuid_ns_dns';
+
+
+ALTER FUNCTION public.uuid_ns_dns() OWNER TO postgres;
+
+--
+-- Name: uuid_ns_oid(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_ns_oid() RETURNS uuid
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/uuid-ossp', 'uuid_ns_oid';
+
+
+ALTER FUNCTION public.uuid_ns_oid() OWNER TO postgres;
+
+--
+-- Name: uuid_ns_url(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_ns_url() RETURNS uuid
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/uuid-ossp', 'uuid_ns_url';
+
+
+ALTER FUNCTION public.uuid_ns_url() OWNER TO postgres;
+
+--
+-- Name: uuid_ns_x500(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION uuid_ns_x500() RETURNS uuid
+    LANGUAGE c IMMUTABLE STRICT
+    AS '$libdir/uuid-ossp', 'uuid_ns_x500';
+
+
+ALTER FUNCTION public.uuid_ns_x500() OWNER TO postgres;
+
+--
+-- Name: #<#; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR #<# (
+    PROCEDURE = hstore_lt,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = #>#,
+    NEGATOR = #>=#,
+    RESTRICT = scalarltsel,
+    JOIN = scalarltjoinsel
+);
+
+
+ALTER OPERATOR public.#<# (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: #<=#; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR #<=# (
+    PROCEDURE = hstore_le,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = #>=#,
+    NEGATOR = #>#,
+    RESTRICT = scalarltsel,
+    JOIN = scalarltjoinsel
+);
+
+
+ALTER OPERATOR public.#<=# (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: #=; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR #= (
+    PROCEDURE = populate_record,
+    LEFTARG = anyelement,
+    RIGHTARG = hstore
+);
+
+
+ALTER OPERATOR public.#= (anyelement, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: #>#; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR #># (
+    PROCEDURE = hstore_gt,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = #<#,
+    NEGATOR = #<=#,
+    RESTRICT = scalargtsel,
+    JOIN = scalargtjoinsel
+);
+
+
+ALTER OPERATOR public.#># (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: #>=#; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR #>=# (
+    PROCEDURE = hstore_ge,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = #<=#,
+    NEGATOR = #<#,
+    RESTRICT = scalargtsel,
+    JOIN = scalargtjoinsel
+);
+
+
+ALTER OPERATOR public.#>=# (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: %#; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR %# (
+    PROCEDURE = hstore_to_matrix,
+    RIGHTARG = hstore
+);
+
+
+ALTER OPERATOR public.%# (NONE, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: %%; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR %% (
+    PROCEDURE = hstore_to_array,
+    RIGHTARG = hstore
+);
+
+
+ALTER OPERATOR public.%% (NONE, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: -; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR - (
+    PROCEDURE = delete,
+    LEFTARG = hstore,
+    RIGHTARG = text
+);
+
+
+ALTER OPERATOR public.- (hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: -; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR - (
+    PROCEDURE = delete,
+    LEFTARG = hstore,
+    RIGHTARG = text[]
+);
+
+
+ALTER OPERATOR public.- (hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: -; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR - (
+    PROCEDURE = delete,
+    LEFTARG = hstore,
+    RIGHTARG = hstore
+);
+
+
+ALTER OPERATOR public.- (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ->; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR -> (
+    PROCEDURE = fetchval,
+    LEFTARG = hstore,
+    RIGHTARG = text
+);
+
+
+ALTER OPERATOR public.-> (hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ->; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR -> (
+    PROCEDURE = slice_array,
+    LEFTARG = hstore,
+    RIGHTARG = text[]
+);
+
+
+ALTER OPERATOR public.-> (hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: <>; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR <> (
+    PROCEDURE = hstore_ne,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = <>,
+    NEGATOR = =,
+    RESTRICT = neqsel,
+    JOIN = neqjoinsel
+);
+
+
+ALTER OPERATOR public.<> (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: <@; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR <@ (
+    PROCEDURE = hs_contained,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = @>,
+    RESTRICT = contsel,
+    JOIN = contjoinsel
+);
+
+
+ALTER OPERATOR public.<@ (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: =; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR = (
+    PROCEDURE = hstore_eq,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = =,
+    NEGATOR = <>,
+    MERGES,
+    HASHES,
+    RESTRICT = eqsel,
+    JOIN = eqjoinsel
+);
+
+
+ALTER OPERATOR public.= (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: =>; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR => (
+    PROCEDURE = hstore,
+    LEFTARG = text,
+    RIGHTARG = text
+);
+
+
+ALTER OPERATOR public.=> (text, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ?; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR ? (
+    PROCEDURE = exist,
+    LEFTARG = hstore,
+    RIGHTARG = text,
+    RESTRICT = contsel,
+    JOIN = contjoinsel
+);
+
+
+ALTER OPERATOR public.? (hstore, text) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ?&; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR ?& (
+    PROCEDURE = exists_all,
+    LEFTARG = hstore,
+    RIGHTARG = text[],
+    RESTRICT = contsel,
+    JOIN = contjoinsel
+);
+
+
+ALTER OPERATOR public.?& (hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ?|; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR ?| (
+    PROCEDURE = exists_any,
+    LEFTARG = hstore,
+    RIGHTARG = text[],
+    RESTRICT = contsel,
+    JOIN = contjoinsel
+);
+
+
+ALTER OPERATOR public.?| (hstore, text[]) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: @; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR @ (
+    PROCEDURE = hs_contains,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = ~,
+    RESTRICT = contsel,
+    JOIN = contjoinsel
+);
+
+
+ALTER OPERATOR public.@ (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: @>; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR @> (
+    PROCEDURE = hs_contains,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = <@,
+    RESTRICT = contsel,
+    JOIN = contjoinsel
+);
+
+
+ALTER OPERATOR public.@> (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ||; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR || (
+    PROCEDURE = hs_concat,
+    LEFTARG = hstore,
+    RIGHTARG = hstore
+);
+
+
+ALTER OPERATOR public.|| (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: ~; Type: OPERATOR; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR ~ (
+    PROCEDURE = hs_contained,
+    LEFTARG = hstore,
+    RIGHTARG = hstore,
+    COMMUTATOR = @,
+    RESTRICT = contsel,
+    JOIN = contjoinsel
+);
+
+
+ALTER OPERATOR public.~ (hstore, hstore) OWNER TO {{ gstoreuser }};
+
+--
+-- Name: btree_hstore_ops; Type: OPERATOR FAMILY; Schema: public; Owner: postgres
+--
+
+CREATE OPERATOR FAMILY btree_hstore_ops USING btree;
+
+
+ALTER OPERATOR FAMILY public.btree_hstore_ops USING btree OWNER TO postgres;
+
+--
+-- Name: btree_hstore_ops; Type: OPERATOR CLASS; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR CLASS btree_hstore_ops
+    DEFAULT FOR TYPE hstore USING btree AS
+    OPERATOR 1 #<#(hstore,hstore) ,
+    OPERATOR 2 #<=#(hstore,hstore) ,
+    OPERATOR 3 =(hstore,hstore) ,
+    OPERATOR 4 #>=#(hstore,hstore) ,
+    OPERATOR 5 #>#(hstore,hstore) ,
+    FUNCTION 1 hstore_cmp(hstore,hstore);
+
+
+ALTER OPERATOR CLASS public.btree_hstore_ops USING btree OWNER TO {{ gstoreuser }};
+
+--
+-- Name: gin_hstore_ops; Type: OPERATOR FAMILY; Schema: public; Owner: postgres
+--
+
+CREATE OPERATOR FAMILY gin_hstore_ops USING gin;
+
+
+ALTER OPERATOR FAMILY public.gin_hstore_ops USING gin OWNER TO postgres;
+
+--
+-- Name: gin_hstore_ops; Type: OPERATOR CLASS; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR CLASS gin_hstore_ops
+    DEFAULT FOR TYPE hstore USING gin AS
+    STORAGE text ,
+    OPERATOR 7 @>(hstore,hstore) ,
+    OPERATOR 9 ?(hstore,text) ,
+    OPERATOR 10 ?|(hstore,text[]) ,
+    OPERATOR 11 ?&(hstore,text[]) ,
+    FUNCTION 1 bttextcmp(text,text) ,
+    FUNCTION 2 gin_extract_hstore(internal,internal) ,
+    FUNCTION 3 gin_extract_hstore_query(internal,internal,smallint,internal,internal) ,
+    FUNCTION 4 gin_consistent_hstore(internal,smallint,internal,integer,internal,internal);
+
+
+ALTER OPERATOR CLASS public.gin_hstore_ops USING gin OWNER TO {{ gstoreuser }};
+
+--
+-- Name: gist_hstore_ops; Type: OPERATOR FAMILY; Schema: public; Owner: postgres
+--
+
+CREATE OPERATOR FAMILY gist_hstore_ops USING gist;
+
+
+ALTER OPERATOR FAMILY public.gist_hstore_ops USING gist OWNER TO postgres;
+
+--
+-- Name: gist_hstore_ops; Type: OPERATOR CLASS; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR CLASS gist_hstore_ops
+    DEFAULT FOR TYPE hstore USING gist AS
+    STORAGE ghstore ,
+    OPERATOR 7 @>(hstore,hstore) ,
+    OPERATOR 9 ?(hstore,text) ,
+    OPERATOR 10 ?|(hstore,text[]) ,
+    OPERATOR 11 ?&(hstore,text[]) ,
+    OPERATOR 13 @(hstore,hstore) ,
+    FUNCTION 1 ghstore_consistent(internal,internal,integer,oid,internal) ,
+    FUNCTION 2 ghstore_union(internal,internal) ,
+    FUNCTION 3 ghstore_compress(internal) ,
+    FUNCTION 4 ghstore_decompress(internal) ,
+    FUNCTION 5 ghstore_penalty(internal,internal,internal) ,
+    FUNCTION 6 ghstore_picksplit(internal,internal) ,
+    FUNCTION 7 ghstore_same(internal,internal,internal);
+
+
+ALTER OPERATOR CLASS public.gist_hstore_ops USING gist OWNER TO {{ gstoreuser }};
+
+--
+-- Name: hash_hstore_ops; Type: OPERATOR FAMILY; Schema: public; Owner: postgres
+--
+
+CREATE OPERATOR FAMILY hash_hstore_ops USING hash;
+
+
+ALTER OPERATOR FAMILY public.hash_hstore_ops USING hash OWNER TO postgres;
+
+--
+-- Name: hash_hstore_ops; Type: OPERATOR CLASS; Schema: public; Owner: {{ gstoreuser }}
+--
+
+CREATE OPERATOR CLASS hash_hstore_ops
+    DEFAULT FOR TYPE hstore USING hash AS
+    OPERATOR 1 =(hstore,hstore) ,
+    FUNCTION 1 hstore_hash(hstore);
+
+
+ALTER OPERATOR CLASS public.hash_hstore_ops USING hash OWNER TO {{ gstoreuser }};
+
+SET search_path = pg_catalog;
+
+--
+-- Name: CAST (text[] AS public.hstore); Type: CAST; Schema: pg_catalog; Owner: 
+--
+
+CREATE CAST (text[] AS public.hstore) WITH FUNCTION public.hstore(text[]);
+
+
+SET search_path = gstoredata, pg_catalog;
+
+SET default_tablespace = '';
+
+SET default_with_oids = false;
+
+--
+-- Name: apps; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE apps (
+    id integer NOT NULL,
+    name character varying(25),
+    url character varying(500),
+    full_name character varying(250),
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    route_key character varying(15),
+    preferred_metadata_standards character varying[]
+);
+
+
+ALTER TABLE gstoredata.apps OWNER TO {{ gstoreuser }};
+
+--
+-- Name: TABLE apps; Type: COMMENT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+COMMENT ON TABLE apps IS 'this is the current table used by the gstore code. ignore app and app_datasets as legacy tables.';
+
+
+--
+-- Name: apps_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE apps_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.apps_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: apps_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE apps_id_seq OWNED BY apps.id;
+
+
+
+
+CREATE TABLE gstoredata.password_reset_codes (
+    userid character varying,
+    resetcode character varying(130),
+    id serial NOT NULL,
+    CONSTRAINT password_reset_codes_pkey PRIMARY KEY (id)
+);
+
+ALTER TABLE gstoredata.password_reset_codes OWNER TO {{ gstoreuser }};
+
+--
+-- external app stuff
+--
+
+
+CREATE TABLE gstoredata.externalapplications
+(
+  name character varying NOT NULL,
+  userid integer,
+  appid serial NOT NULL,
+  CONSTRAINT externalapplications_pkey PRIMARY KEY (appid)
+)
+WITH (
+  OIDS=FALSE
+);
+ALTER TABLE gstoredata.externalapplications
+  OWNER TO {{ gstoreuser }};
+
+
+CREATE TABLE gstoredata.externalusers (
+  uuid uuid NOT NULL,
+  appid integer,
+  CONSTRAINT externalusers_pkey PRIMARY KEY (uuid)
+)
+WITH (
+  OIDS=FALSE
+);
+
+ALTER TABLE gstoredata.externalusers OWNER TO {{ gstoreuser }};
+
+
+
+
+
+
+CREATE TABLE gstoredata.users (
+    id serial NOT NULL,
+    userid character varying,
+    firstname character varying(100),
+    lastname character varying(100),
+    email text,
+    salt character varying(50),
+    password character varying(150),
+    address1 character varying(150),
+    address2 character varying(150),
+    state character varying(50),
+    zipcode character varying(15),
+    tel_voice character varying(20),
+    tel_fax character varying(20),
+    country character varying(100),
+    city character varying(100),
+    CONSTRAINT users_pkey PRIMARY KEY (id),
+    CONSTRAINT users_email_key UNIQUE (email),
+    CONSTRAINT users_id_key UNIQUE (id)
+);
+
+ALTER TABLE gstoredata.users OWNER TO {{ gstoreuser }};
+
+--
+-- Name: categories; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE categories (
+    id integer NOT NULL,
+    theme character varying(150),
+    subtheme character varying(150),
+    groupname character varying(150),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    apps character varying[]
+);
+
+
+ALTER TABLE gstoredata.categories OWNER TO {{ gstoreuser }};
+
+--
+-- Name: categories_collections; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE categories_collections (
+    collection_id integer,
+    category_id integer
+);
+
+
+ALTER TABLE gstoredata.categories_collections OWNER TO {{ gstoreuser }};
+
+--
+-- Name: categories_datasets; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE categories_datasets (
+    category_id integer,
+    dataset_id integer,
+    id serial NOT NULL,
+    CONSTRAINT categories_datasets_pkey PRIMARY KEY (id)
+);
+
+
+ALTER TABLE gstoredata.categories_datasets OWNER TO {{ gstoreuser }};
+
+--
+-- Name: categories_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE categories_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.categories_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: categories_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE categories_id_seq OWNED BY categories.id;
+
+
+--
+-- Name: citations; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE citations (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    full_citation character varying(1000),
+    date_added timestamp with time zone DEFAULT now()
+);
+
+
+ALTER TABLE gstoredata.citations OWNER TO {{ gstoreuser }};
+
+--
+-- Name: citations_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE citations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.citations_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: citations_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE citations_id_seq OWNED BY citations.id;
+
+
+--
+-- Name: collection_metadata; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE collection_metadata (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    collection_id integer,
+    gstore_xml text,
+    date_modified timestamp with time zone
+);
+
+
+ALTER TABLE gstoredata.collection_metadata OWNER TO {{ gstoreuser }};
+
+--
+-- Name: collection_metadata_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE collection_metadata_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.collection_metadata_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: collection_metadata_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE collection_metadata_id_seq OWNED BY collection_metadata.id;
+
+
+--
+-- Name: collections; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE collections (
+    id integer NOT NULL,
+    name character varying(50),
+    description character varying(200),
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    apps character varying[],
+    valid_start timestamp with time zone,
+    valid_end timestamp with time zone,
+    bbox numeric[],
+    date_added timestamp without time zone DEFAULT now() NOT NULL,
+    is_embargoed boolean DEFAULT false NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    is_available boolean DEFAULT true NOT NULL,
+    has_tileindex boolean DEFAULT false NOT NULL,
+    tileindex_taxonomies character varying[],
+    is_spatial boolean DEFAULT true NOT NULL,
+    dataset_taxonomies character varying[],
+    excluded_standards character varying[],
+    bbox_geom public.geometry,
+    geom public.geometry
+);
+
+
+ALTER TABLE gstoredata.collections OWNER TO {{ gstoreuser }};
+
+--
+-- Name: collections_datasets; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE collections_datasets (
+    collection_id integer,
+    dataset_id integer
+);
+
+
+ALTER TABLE gstoredata.collections_datasets OWNER TO {{ gstoreuser }};
+
+--
+-- Name: collections_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE collections_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.collections_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: collections_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE collections_id_seq OWNED BY collections.id;
+
+
+--
+-- Name: cv_censorcodes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_censorcodes (
+    id integer NOT NULL,
+    term character varying(50) NOT NULL,
+    description character varying(200),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.cv_censorcodes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_censorcodes_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_censorcodes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_censorcodes_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_censorcodes_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_censorcodes_id_seq OWNED BY cv_censorcodes.id;
+
+
+--
+-- Name: cv_datatypes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_datatypes (
+    id integer NOT NULL,
+    term character varying(50) NOT NULL,
+    description character varying(500),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.cv_datatypes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_datatypes_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_datatypes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_datatypes_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_datatypes_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_datatypes_id_seq OWNED BY cv_datatypes.id;
+
+
+--
+-- Name: cv_generalcategories; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_generalcategories (
+    id integer NOT NULL,
+    term character varying(50) NOT NULL,
+    description character varying(200),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.cv_generalcategories OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_generalcategories_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_generalcategories_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_generalcategories_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_generalcategories_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_generalcategories_id_seq OWNED BY cv_generalcategories.id;
+
+
+--
+-- Name: cv_parametersources; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_parametersources (
+    id integer NOT NULL,
+    name character varying(100),
+    description character varying(500),
+    uuid uuid DEFAULT public.uuid_generate_v4()
+);
+
+
+ALTER TABLE gstoredata.cv_parametersources OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_parametersources_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_parametersources_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_parametersources_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_parametersources_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_parametersources_id_seq OWNED BY cv_parametersources.id;
+
+
+--
+-- Name: cv_qualitycontrollevels; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_qualitycontrollevels (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    code character varying(50),
+    definition character varying(250),
+    explanation character varying(500)
+);
+
+
+ALTER TABLE gstoredata.cv_qualitycontrollevels OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_qualitycontrollevel_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_qualitycontrollevel_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_qualitycontrollevel_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_qualitycontrollevel_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_qualitycontrollevel_id_seq OWNED BY cv_qualitycontrollevels.id;
+
+
+--
+-- Name: cv_samplemediums; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_samplemediums (
+    id integer NOT NULL,
+    term character varying(50) NOT NULL,
+    description character varying(200),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.cv_samplemediums OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_samplemediums_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_samplemediums_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_samplemediums_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_samplemediums_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_samplemediums_id_seq OWNED BY cv_samplemediums.id;
+
+
+--
+-- Name: cv_sampletypes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_sampletypes (
+    id integer NOT NULL,
+    term character varying(50) NOT NULL,
+    description character varying(500),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.cv_sampletypes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_sampletypes_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_sampletypes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_sampletypes_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_sampletypes_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_sampletypes_id_seq OWNED BY cv_sampletypes.id;
+
+
+--
+-- Name: cv_speciation; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_speciation (
+    id integer NOT NULL,
+    term character varying(50) NOT NULL,
+    description character varying(200),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.cv_speciation OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_speciation_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_speciation_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_speciation_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_speciation_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_speciation_id_seq OWNED BY cv_speciation.id;
+
+
+--
+-- Name: cv_timeunits; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_timeunits (
+    id integer NOT NULL,
+    name character varying(100) NOT NULL,
+    type character varying(100),
+    abbreviation character varying(10),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    odm_id integer
+);
+
+
+ALTER TABLE gstoredata.cv_timeunits OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_timeunits_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_timeunits_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_timeunits_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_timeunits_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_timeunits_id_seq OWNED BY cv_timeunits.id;
+
+
+--
+-- Name: cv_units; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_units (
+    id integer NOT NULL,
+    name character varying(100) NOT NULL,
+    type character varying(100),
+    abbreviation character varying(50),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    odm_id integer
+);
+
+
+ALTER TABLE gstoredata.cv_units OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_units_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_units_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_units_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_units_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_units_id_seq OWNED BY cv_units.id;
+
+
+--
+-- Name: cv_valuetypes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_valuetypes (
+    id integer NOT NULL,
+    term character varying(50) NOT NULL,
+    description character varying(200),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.cv_valuetypes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_valuetypes_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_valuetypes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_valuetypes_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_valuetypes_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_valuetypes_id_seq OWNED BY cv_valuetypes.id;
+
+
+--
+-- Name: cv_variablenames; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE cv_variablenames (
+    id integer NOT NULL,
+    term character varying(50) NOT NULL,
+    description character varying(500),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.cv_variablenames OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_variablenames_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE cv_variablenames_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.cv_variablenames_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: cv_variablenames_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE cv_variablenames_id_seq OWNED BY cv_variablenames.id;
+
+
+--
+-- Name: dataone_core; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE dataone_core (
+    id integer NOT NULL,
+    object_uuid uuid,
+    active boolean DEFAULT false NOT NULL,
+    object_type character varying(50)
+);
+
+
+ALTER TABLE gstoredata.dataone_core OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_core_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE dataone_core_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.dataone_core_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_core_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE dataone_core_id_seq OWNED BY dataone_core.id;
+
+
+--
+-- Name: dataone_dataobjects; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE dataone_dataobjects (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    dataset_format character varying(20),
+    date_added timestamp with time zone DEFAULT timezone('UTC'::text, now()),
+    dataset_id integer,
+    format_id integer
+);
+
+
+ALTER TABLE gstoredata.dataone_dataobjects OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_dataobjects_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE dataone_dataobjects_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.dataone_dataobjects_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_dataobjects_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE dataone_dataobjects_id_seq OWNED BY dataone_dataobjects.id;
+
+
+--
+-- Name: dataone_datapackages; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE dataone_datapackages (
+    id integer NOT NULL,
+    dataobj_uuid uuid,
+    scimetadataobj_uuid uuid,
+    format_id integer,
+    date_added timestamp with time zone DEFAULT timezone('UTC'::text, now()),
+    uuid uuid DEFAULT public.uuid_generate_v4()
+);
+
+
+ALTER TABLE gstoredata.dataone_datapackages OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_datapackages_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE dataone_datapackages_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.dataone_datapackages_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_datapackages_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE dataone_datapackages_id_seq OWNED BY dataone_datapackages.id;
+
+
+--
+-- Name: dataone_formatids; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE dataone_formatids (
+    id integer NOT NULL,
+    format character varying(200),
+    name character varying(200),
+    type character varying(20),
+    mimetype character varying
+);
+
+
+ALTER TABLE gstoredata.dataone_formatids OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_formatids_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE dataone_formatids_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.dataone_formatids_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_formatids_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE dataone_formatids_id_seq OWNED BY dataone_formatids.id;
+
+
+--
+-- Name: dataone_obsoletes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE dataone_obsoletes (
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    date_changed timestamp with time zone DEFAULT timezone('UTC'::text, now()),
+    active boolean DEFAULT false NOT NULL,
+    core_id integer,
+    id integer NOT NULL
+);
+
+
+ALTER TABLE gstoredata.dataone_obsoletes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_obsoletes_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE dataone_obsoletes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.dataone_obsoletes_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_obsoletes_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE dataone_obsoletes_id_seq OWNED BY dataone_obsoletes.id;
+
+
+--
+-- Name: dataone_replicated_objects; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE dataone_replicated_objects (
+    id integer NOT NULL,
+    identifier character varying(1000)
+);
+
+
+ALTER TABLE gstoredata.dataone_replicated_objects OWNER TO {{ gstoreuser }};
+
+--
+-- Name: TABLE dataone_replicated_objects; Type: COMMENT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+COMMENT ON TABLE dataone_replicated_objects IS 'we only run uuids, but once it''s a mn4 node, we could get anything as an identifer. so this is a placeholder (and reminder) for trouble later.';
+
+
+--
+-- Name: COLUMN dataone_replicated_objects.identifier; Type: COMMENT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+COMMENT ON COLUMN dataone_replicated_objects.identifier IS 'should be unique? or we might need a source identifier (mn id or something).';
+
+
+--
+-- Name: dataone_replicated_objects_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE dataone_replicated_objects_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.dataone_replicated_objects_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_replicated_objects_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE dataone_replicated_objects_id_seq OWNED BY dataone_replicated_objects.id;
+
+
+--
+-- Name: dataone_sciencemetadata; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE dataone_sciencemetadata (
+    id integer NOT NULL,
+    standard_id integer,
+    date_added timestamp with time zone DEFAULT timezone('UTC'::text, now()),
+    dataset_id integer,
+    format_id integer,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.dataone_sciencemetadata OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_sciencemetadata_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE dataone_sciencemetadata_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.dataone_sciencemetadata_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_sciencemetadata_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE dataone_sciencemetadata_id_seq OWNED BY dataone_sciencemetadata.id;
+
+
+--
+-- Name: dataone_systemmetadata; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE dataone_systemmetadata (
+    id integer NOT NULL,
+    date_changed timestamp with time zone DEFAULT timezone('UTC'::text, now()) NOT NULL,
+    obsolete_id integer,
+    replication_policy boolean DEFAULT false NOT NULL,
+    access_policies text
+);
+
+
+ALTER TABLE gstoredata.dataone_systemmetadata OWNER TO {{ gstoreuser }};
+
+--
+-- Name: TABLE dataone_systemmetadata; Type: COMMENT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+COMMENT ON TABLE dataone_systemmetadata IS 'to handle any changes to the system metadata (replication policy, access policy, timestamp for archived)';
+
+
+--
+-- Name: COLUMN dataone_systemmetadata.access_policies; Type: COMMENT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+COMMENT ON COLUMN dataone_systemmetadata.access_policies IS 'the xml as text for sqla. least ideal.';
+
+
+--
+-- Name: dataone_systemmetadata_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE dataone_systemmetadata_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.dataone_systemmetadata_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: dataone_systemmetadata_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE dataone_systemmetadata_id_seq OWNED BY dataone_systemmetadata.id;
+
+
+--
+-- Name: datasets; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE datasets (
+    id integer NOT NULL,
+    extent character varying(75),
+    description character varying(200),
+    taxonomy character varying(50) DEFAULT 'vector'::character varying NOT NULL,
+    feature_count integer,
+    abstract text,
+    dateadded timestamp without time zone DEFAULT now() NOT NULL,
+    basename character varying(100) NOT NULL,
+    old_idnum integer,
+    geom public.geometry,
+    geomtype character varying,
+    formats_cache character varying,
+    orig_epsg integer DEFAULT 4326 NOT NULL,
+    inactive boolean DEFAULT false,
+    box numeric[],
+    has_metadata_cache boolean DEFAULT true,
+    apps_cache text[],
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    begin_datetime timestamp with time zone,
+    end_datetime timestamp with time zone,
+    record_count integer,
+    is_available boolean DEFAULT true NOT NULL,
+    excluded_formats character varying[],
+    excluded_services character varying[],
+    qualitycontrollevel_id integer DEFAULT 1,
+    date_acquired timestamp with time zone,
+    is_embargoed boolean DEFAULT false NOT NULL,
+    embargo_release_date timestamp with time zone,
+    excluded_standards character varying[],
+    aliases character varying[],
+    is_cacheable boolean DEFAULT true,
+    license_id integer,
+    date_published timestamp without time zone,
+    model_run_uuid uuid,
+    model_set character varying(50),
+    model_set_type character varying(50),
+    model_set_taxonomy character varying(50),
+    parent_model_run_uuid uuid,
+    model_vars character varying(200),
+    model_run_name character varying(200),
+    unique_name character varying(200),
+    externalapp character varying,
+    externaluserid character varying,
+    CONSTRAINT valid_dataset_taxonomy CHECK (((taxonomy)::text = ANY (ARRAY[('vector'::character varying)::text, ('geoimage'::character varying)::text, ('file'::character varying)::text, ('table'::character varying)::text, ('service'::character varying)::text, ('rtindex'::character varying)::text, ('vtindex'::character varying)::text])))
+);
+
+
+ALTER TABLE gstoredata.datasets OWNER TO {{ gstoreuser }};
+
+--
+-- Name: datasets_citations; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE datasets_citations (
+    dataset_id integer,
+    citation_id integer
+);
+
+
+ALTER TABLE gstoredata.datasets_citations OWNER TO {{ gstoreuser }};
+
+--
+-- Name: datasets_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE datasets_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.datasets_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: datasets_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE datasets_id_seq OWNED BY datasets.id;
+
+
+--
+-- Name: datasets_mapfiles; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE datasets_mapfiles (
+    dataset_id integer NOT NULL,
+    mapfile_id integer NOT NULL,
+    description text
+);
+
+
+ALTER TABLE gstoredata.datasets_mapfiles OWNER TO {{ gstoreuser }};
+
+--
+-- Name: datasets_sources; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE datasets_sources (
+    dataset_id integer,
+    source_id integer
+);
+
+
+ALTER TABLE gstoredata.datasets_sources OWNER TO {{ gstoreuser }};
+
+--
+-- Name: feature_attribute_representations; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE feature_attribute_representations (
+    id integer NOT NULL,
+    attribute_id integer,
+    representation character varying(20)
+);
+
+
+ALTER TABLE gstoredata.feature_attribute_representations OWNER TO {{ gstoreuser }};
+
+--
+-- Name: feature_attribute_representations_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE feature_attribute_representations_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.feature_attribute_representations_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: feature_attribute_representations_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE feature_attribute_representations_id_seq OWNED BY feature_attribute_representations.id;
+
+
+--
+-- Name: features_attributes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE features_attributes (
+    dataset_id integer NOT NULL,
+    attribute_type character varying,
+    array_id integer,
+    name character varying NOT NULL,
+    orig_name character varying,
+    description character varying,
+    ogr_type integer,
+    ogr_justify integer,
+    ogr_width integer,
+    ogr_precision integer,
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    parameter_id integer,
+    nodata character varying(10)
+);
+
+
+ALTER TABLE gstoredata.features_attributes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: features_attributes_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE features_attributes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.features_attributes_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: features_attributes_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE features_attributes_id_seq OWNED BY features_attributes.id;
+
+
+--
+-- Name: geolookups; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE geolookups (
+    gid integer NOT NULL,
+    description character varying NOT NULL,
+    geom public.geometry,
+    box_geom public.geometry,
+    extra_attributes character varying,
+    what character varying,
+    app_ids character varying[],
+    box numeric[],
+    hstore_extra_attributes public.hstore,
+    aliases character varying[],
+    CONSTRAINT enforce_dims_box_geom CHECK ((public.st_ndims(box_geom) = 2)),
+    CONSTRAINT enforce_dims_geom CHECK ((public.st_ndims(geom) = 2)),
+    CONSTRAINT enforce_srid_box_geom CHECK ((public.st_srid(box_geom) = 0)),
+    CONSTRAINT enforce_srid_geom CHECK ((public.st_srid(geom) = 0))
+);
+
+
+ALTER TABLE gstoredata.geolookups OWNER TO {{ gstoreuser }};
+
+--
+-- Name: geolookups_gid_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE geolookups_gid_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.geolookups_gid_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: geolookups_gid_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE geolookups_gid_seq OWNED BY geolookups.gid;
+
+
+--
+-- Name: get_index; Type: VIEW; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE VIEW get_index AS
+    SELECT n.nspname AS schema, c.relname AS name, CASE c.relkind WHEN 'r'::"char" THEN 'table'::text WHEN 'v'::"char" THEN 'view'::text WHEN 'i'::"char" THEN 'index'::text WHEN 'S'::"char" THEN 'sequence'::text WHEN 's'::"char" THEN 'special'::text ELSE NULL::text END AS type, u.usename AS owner, c2.relname AS "table" FROM ((((pg_class c JOIN pg_index i ON ((i.indexrelid = c.oid))) JOIN pg_class c2 ON ((i.indrelid = c2.oid))) LEFT JOIN pg_user u ON ((u.usesysid = c.relowner))) LEFT JOIN pg_namespace n ON ((n.oid = c.relnamespace))) WHERE (((c.relkind = ANY (ARRAY['i'::"char", ''::"char"])) AND (n.nspname <> ALL (ARRAY['pg_catalog'::name, 'pg_toast'::name]))) AND pg_table_is_visible(c.oid)) ORDER BY n.nspname, c.relname;
+
+
+ALTER TABLE gstoredata.get_index OWNER TO {{ gstoreuser }};
+
+--
+-- Name: source; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE source (
+    id integer NOT NULL,
+    location character varying(255),
+    type character varying(50) NOT NULL,
+    is_external boolean DEFAULT false NOT NULL,
+    zipgroup character varying,
+    orig_epsg integer,
+    extension character varying(5),
+    active boolean DEFAULT true,
+    CONSTRAINT valid_source_type CHECK (((type)::text = ANY (ARRAY[('wcs'::character varying)::text, ('wms'::character varying)::text, ('wfs'::character varying)::text, ('file'::character varying)::text])))
+);
+
+
+ALTER TABLE gstoredata.source OWNER TO {{ gstoreuser }};
+
+--
+-- Name: get_sources; Type: VIEW; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE VIEW get_sources AS
+    SELECT s.id AS source_id, d.id AS dataset_id, s.location, s.active FROM ((datasets d LEFT JOIN datasets_sources ds ON ((d.id = ds.dataset_id))) LEFT JOIN source s ON ((s.id = ds.source_id)));
+
+
+ALTER TABLE gstoredata.get_sources OWNER TO {{ gstoreuser }};
+
+--
+-- Name: source_files; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE source_files (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    location character varying(400),
+    source_id integer
+);
+
+
+ALTER TABLE gstoredata.source_files OWNER TO {{ gstoreuser }};
+
+--
+-- Name: sources; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE sources (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    set character varying(25),
+    extension character varying(10),
+    active boolean DEFAULT true,
+    dataset_id integer,
+    is_external boolean DEFAULT false NOT NULL,
+    file_mimetype character varying(100),
+    identifier character varying,
+    identifier_type character varying
+);
+
+
+ALTER TABLE gstoredata.sources OWNER TO {{ gstoreuser }};
+
+--
+-- Name: tileindexes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE tileindexes (
+    id integer NOT NULL,
+    name character varying(100),
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    dateadded timestamp with time zone DEFAULT now(),
+    bbox numeric[],
+    description character varying(250),
+    epsgs integer[],
+    basename character varying,
+    taxonomy character varying,
+    is_active boolean DEFAULT true NOT NULL
+);
+
+
+ALTER TABLE gstoredata.tileindexes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: tileindexes_datasets; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE tileindexes_datasets (
+    tile_id integer,
+    dataset_id integer,
+    id integer NOT NULL
+);
+
+
+ALTER TABLE gstoredata.tileindexes_datasets OWNER TO {{ gstoreuser }};
+
+--
+-- Name: get_tileindexes; Type: VIEW; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE VIEW get_tileindexes AS
+    SELECT t.id AS tile_id, t.uuid AS tile_uuid, t.name AS tile_name, d.id AS gid, d.uuid AS dataset_uuid, d.description, f.location, d.geom, d.orig_epsg, d.begin_datetime, d.end_datetime FROM ((((tileindexes t LEFT JOIN tileindexes_datasets ts ON ((ts.tile_id = t.id))) LEFT JOIN datasets d ON ((ts.dataset_id = d.id))) LEFT JOIN sources s ON ((d.id = s.dataset_id))) LEFT JOIN source_files f ON ((s.id = f.source_id))) WHERE (((s.extension)::text = 'ecw'::text) AND ((f.location)::text ~~ '%.ecw'::text));
+
+
+ALTER TABLE gstoredata.get_tileindexes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: get_view; Type: VIEW; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE VIEW get_view AS
+    SELECT pg_views.schemaname, pg_views.viewname, pg_views.viewowner, pg_views.definition FROM pg_views WHERE (pg_views.schemaname = 'public'::name);
+
+
+ALTER TABLE gstoredata.get_view OWNER TO {{ gstoreuser }};
+
+--
+-- Name: licenses; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE licenses (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    name character varying(250),
+    alias character varying(50),
+    legal_code_uri character varying(500),
+    image_url character varying(500)
+);
+
+
+ALTER TABLE gstoredata.licenses OWNER TO {{ gstoreuser }};
+
+--
+-- Name: licenses_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE licenses_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.licenses_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: licenses_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE licenses_id_seq OWNED BY licenses.id;
+
+
+--
+-- Name: lut_parameters; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE lut_parameters (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    term character varying(100),
+    description character varying(500),
+    source character varying,
+    properties public.hstore,
+    odm_id integer
+);
+
+
+ALTER TABLE gstoredata.lut_parameters OWNER TO {{ gstoreuser }};
+
+--
+-- Name: COLUMN lut_parameters.source; Type: COMMENT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+COMMENT ON COLUMN lut_parameters.source IS 'source as representation, i.e. display this parameter as waterml ';
+
+
+--
+-- Name: COLUMN lut_parameters.properties; Type: COMMENT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+COMMENT ON COLUMN lut_parameters.properties IS 'varies by source ';
+
+
+--
+-- Name: lut_parameters_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE lut_parameters_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.lut_parameters_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: lut_parameters_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE lut_parameters_id_seq OWNED BY lut_parameters.id;
+
+
+--
+-- Name: mapfile_classes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE mapfile_classes (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    settings public.hstore,
+    name character varying(50)
+);
+
+
+ALTER TABLE gstoredata.mapfile_classes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_classes_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE mapfile_classes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.mapfile_classes_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_classes_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE mapfile_classes_id_seq OWNED BY mapfile_classes.id;
+
+
+--
+-- Name: mapfile_template; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE mapfile_template (
+    id integer NOT NULL,
+    description character varying NOT NULL,
+    taxonomy character varying NOT NULL,
+    xml text
+);
+
+
+ALTER TABLE gstoredata.mapfile_template OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE mapfile_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.mapfile_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE mapfile_id_seq OWNED BY mapfile_template.id;
+
+
+--
+-- Name: mapfile_settings; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE mapfile_settings (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    settings public.hstore,
+    source_id integer
+);
+
+
+ALTER TABLE gstoredata.mapfile_settings OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_settings_classes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE mapfile_settings_classes (
+    settings_id integer,
+    class_id integer
+);
+
+
+ALTER TABLE gstoredata.mapfile_settings_classes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_settings_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE mapfile_settings_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.mapfile_settings_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_settings_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE mapfile_settings_id_seq OWNED BY mapfile_settings.id;
+
+
+--
+-- Name: mapfile_settings_styles; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE mapfile_settings_styles (
+    settings_id integer,
+    style_id integer
+);
+
+
+ALTER TABLE gstoredata.mapfile_settings_styles OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_styles; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE mapfile_styles (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    settings public.hstore,
+    name character varying(25)
+);
+
+
+ALTER TABLE gstoredata.mapfile_styles OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_styles_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE mapfile_styles_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.mapfile_styles_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: mapfile_styles_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE mapfile_styles_id_seq OWNED BY mapfile_styles.id;
+
+
+--
+-- Name: metadata; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE metadata (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    original_id integer,
+    dataset_id integer,
+    gstore_xml text,
+    date_modified timestamp with time zone DEFAULT timezone('utc'::text, now())
+);
+
+
+ALTER TABLE gstoredata.metadata OWNER TO {{ gstoreuser }};
+
+--
+-- Name: metadata_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE metadata_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.metadata_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: metadata_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE metadata_id_seq OWNED BY metadata.id;
+
+
+--
+-- Name: metadata_standards; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE metadata_standards (
+    id integer NOT NULL,
+    name character varying(100),
+    alias character varying(50),
+    description character varying(500),
+    supported_formats character varying[]
+);
+
+
+ALTER TABLE gstoredata.metadata_standards OWNER TO {{ gstoreuser }};
+
+--
+-- Name: metadata_standards_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE metadata_standards_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.metadata_standards_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: metadata_standards_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE metadata_standards_id_seq OWNED BY metadata_standards.id;
+
+
+
+
+--
+-- TOC entry 320 (class 1259 OID 19017)
+-- Name: model_runs; Type: TABLE; Schema: gstoredata; Owner: gstore; Tablespace: 
+--
+
+CREATE TABLE model_runs (
+    id integer NOT NULL,
+    model_run_id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    description character varying,
+    start_date timestamp without time zone DEFAULT now() NOT NULL,
+    end_date timestamp without time zone,
+    researcher_name character varying(100),
+    model_run_name character varying(300),
+    model_keywords character varying(500),
+    userid character varying(100),
+    CONSTRAINT model_run_pk PRIMARY KEY (model_run_id),
+    CONSTRAINT model_runs_model_run_name_key UNIQUE (model_run_name)
+);
+
+
+ALTER TABLE gstoredata.model_runs OWNER TO {{ gstoreuser }};
+
+--
+-- TOC entry 319 (class 1259 OID 19015)
+-- Name: model_runs_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: gstore
+--
+
+CREATE SEQUENCE model_runs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.model_runs_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- TOC entry 4352 (class 0 OID 0)
+-- Dependencies: 319
+-- Name: model_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: gstore
+--
+
+ALTER SEQUENCE model_runs_id_seq OWNED BY model_runs.id;
+
+
+--
+-- Name: odm_networks; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE odm_networks (
+    id integer NOT NULL,
+    name character varying(100),
+    code character varying(20)[],
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.odm_networks OWNER TO {{ gstoreuser }};
+
+--
+-- Name: odm_networks_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE odm_networks_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.odm_networks_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: odm_networks_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE odm_networks_id_seq OWNED BY odm_networks.id;
+
+
+--
+-- Name: odm_sites; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE odm_sites (
+    id integer NOT NULL,
+    name character varying(50),
+    code character varying(20),
+    odm_id integer,
+    geom character varying,
+    orig_epsg integer,
+    elevation_m double precision,
+    vertical_datum character varying(50),
+    state character varying(50),
+    county character varying(100),
+    dateadded timestamp with time zone,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.odm_sites OWNER TO {{ gstoreuser }};
+
+--
+-- Name: odm_sites_datasets; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE odm_sites_datasets (
+    site_id integer,
+    dataset_id integer
+);
+
+
+ALTER TABLE gstoredata.odm_sites_datasets OWNER TO {{ gstoreuser }};
+
+--
+-- Name: odm_sites_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE odm_sites_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.odm_sites_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: odm_sites_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE odm_sites_id_seq OWNED BY odm_sites.id;
+
+
+--
+-- Name: original_metadata; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE original_metadata (
+    id integer NOT NULL,
+    original_xml text,
+    original_text text,
+    dataset_id integer,
+    original_xml_standard character varying(50) DEFAULT 'fgdc'::character varying,
+    date_modified timestamp with time zone
+);
+
+
+ALTER TABLE gstoredata.original_metadata OWNER TO {{ gstoreuser }};
+
+--
+-- Name: original_metadata_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE original_metadata_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.original_metadata_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: original_metadata_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE original_metadata_id_seq OWNED BY original_metadata.id;
+
+
+--
+-- Name: parameters; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE parameters (
+    id integer NOT NULL,
+    name character varying(50),
+    original_description character varying(1000),
+    nodata character varying(20),
+    unit_id integer,
+    timeunit_id integer,
+    time_frequency character varying(50),
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    datatype_id integer,
+    zvalue numeric,
+    zvalue_units_id integer,
+    description character varying(250),
+    original_name character varying(150),
+    parametersource_id integer
+);
+
+
+ALTER TABLE gstoredata.parameters OWNER TO {{ gstoreuser }};
+
+--
+-- Name: parameters_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE parameters_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.parameters_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: parameters_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE parameters_id_seq OWNED BY parameters.id;
+
+
+--
+-- Name: parameters_parameterluts; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE parameters_parameterluts (
+    parameter_id integer,
+    lut_id integer
+);
+
+
+ALTER TABLE gstoredata.parameters_parameterluts OWNER TO {{ gstoreuser }};
+
+--
+-- Name: projects; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE projects (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    name character varying(200),
+    description character varying(1000),
+    acknowledgments character varying(500),
+    funder character varying(200),
+    award_number character varying(50)
+);
+
+
+ALTER TABLE gstoredata.projects OWNER TO {{ gstoreuser }};
+
+--
+-- Name: projects_datasets; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE projects_datasets (
+    dataset_id integer,
+    project_id integer
+);
+
+
+ALTER TABLE gstoredata.projects_datasets OWNER TO {{ gstoreuser }};
+
+--
+-- Name: projects_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE projects_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.projects_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: projects_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE projects_id_seq OWNED BY projects.id;
+
+
+--
+-- Name: provenance_bases; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE provenance_bases (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    dataset_id integer,
+    ontology_id integer,
+    date_modified timestamp with time zone,
+    date_added timestamp with time zone,
+    inputstandards_id integer
+);
+
+
+ALTER TABLE gstoredata.provenance_bases OWNER TO {{ gstoreuser }};
+
+--
+-- Name: provenance_bases_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE provenance_bases_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.provenance_bases_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: provenance_bases_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE provenance_bases_id_seq OWNED BY provenance_bases.id;
+
+
+--
+-- Name: provenance_inputstandards; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE provenance_inputstandards (
+    id integer NOT NULL,
+    standard_name character varying(100),
+    standard_key character varying(20),
+    standard_format character varying(10)
+);
+
+
+ALTER TABLE gstoredata.provenance_inputstandards OWNER TO {{ gstoreuser }};
+
+--
+-- Name: provenance_inputstandards_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE provenance_inputstandards_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.provenance_inputstandards_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: provenance_inputstandards_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE provenance_inputstandards_id_seq OWNED BY provenance_inputstandards.id;
+
+
+--
+-- Name: provenance_mappings; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE provenance_mappings (
+    id integer NOT NULL,
+    ontology_id integer,
+    inputstandards_id integer,
+    output_format character varying(10),
+    transformation_method character varying(10),
+    transformation_file character varying(500)
+);
+
+
+ALTER TABLE gstoredata.provenance_mappings OWNER TO {{ gstoreuser }};
+
+--
+-- Name: provenance_mappings_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE provenance_mappings_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.provenance_mappings_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: provenance_mappings_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE provenance_mappings_id_seq OWNED BY provenance_mappings.id;
+
+
+--
+-- Name: provenance_ontologies; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE provenance_ontologies (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    ontology_key character varying(20) NOT NULL,
+    ontology_name character varying(100),
+    app_id integer
+);
+
+
+ALTER TABLE gstoredata.provenance_ontologies OWNER TO {{ gstoreuser }};
+
+--
+-- Name: provenance_ontologies_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE provenance_ontologies_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.provenance_ontologies_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: provenance_ontologies_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE provenance_ontologies_id_seq OWNED BY provenance_ontologies.id;
+
+
+--
+-- Name: relationships; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE relationships (
+    id integer NOT NULL,
+    base_dataset integer,
+    related_dataset integer,
+    relationship character varying(100),
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL
+);
+
+
+ALTER TABLE gstoredata.relationships OWNER TO {{ gstoreuser }};
+
+--
+-- Name: relationships_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE relationships_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.relationships_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: relationships_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE relationships_id_seq OWNED BY relationships.id;
+
+
+--
+-- Name: repositories; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE repositories (
+    id integer NOT NULL,
+    uuid uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    name character varying(250),
+    description character varying(500),
+    url character varying(750),
+    excluded_standards character varying[]
+);
+
+
+ALTER TABLE gstoredata.repositories OWNER TO {{ gstoreuser }};
+
+--
+-- Name: repositories_apps_datasets; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE repositories_apps_datasets (
+    dataset_id integer,
+    app_id integer,
+    repository_id integer
+);
+
+
+ALTER TABLE gstoredata.repositories_apps_datasets OWNER TO {{ gstoreuser }};
+
+--
+-- Name: repositories_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE repositories_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.repositories_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: repositories_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE repositories_id_seq OWNED BY repositories.id;
+
+
+--
+-- Name: search_dataone; Type: VIEW; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE VIEW search_dataone AS
+    WITH objects AS ((SELECT d.uuid, f.format, d.date_added, 'data object'::text AS datatype, d.dataset_format AS object_ext FROM dataone_dataobjects d, dataone_formatids f WHERE (d.format_id = f.id) UNION SELECT d.uuid, f.format, d.date_added, 'science metadata'::text AS datatype, 'xml'::character varying AS object_ext FROM dataone_sciencemetadata d, dataone_formatids f WHERE (d.format_id = f.id)) UNION SELECT d.uuid, f.format, d.date_added, 'data package'::text AS datatype, 'xml'::character varying AS object_ext FROM dataone_datapackages d, dataone_formatids f WHERE (d.format_id = f.id)), current_obsoletes AS (SELECT dataone_obsoletes.core_id AS core, dataone_obsoletes.date_changed AS core_changed FROM dataone_obsoletes WHERE (dataone_obsoletes.active = true)) SELECT o.uuid AS object_uuid, o.datatype AS object_type, o.format AS object_format, o.object_ext, o.date_added AS object_added, co.core_changed AS object_changed, c.id AS core_id, b.uuid AS obsolete_uuid FROM objects o, current_obsoletes co, dataone_core c, dataone_obsoletes b WHERE ((((c.object_uuid = o.uuid) AND (co.core = c.id)) AND (b.core_id = co.core)) AND (b.date_changed = co.core_changed)) ORDER BY co.core_changed DESC;
+
+
+ALTER TABLE gstoredata.search_dataone OWNER TO {{ gstoreuser }};
+
+--
+-- Name: shapes; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE shapes (
+    gid integer NOT NULL,
+    dataset_id integer,
+    geom public.geometry,
+    "time" timestamp without time zone,
+    uuid uuid DEFAULT public.uuid_generate_v4(),
+    fid integer NOT NULL
+);
+
+
+ALTER TABLE gstoredata.shapes OWNER TO {{ gstoreuser }};
+
+--
+-- Name: shapes_fid_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE shapes_fid_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.shapes_fid_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: shapes_fid_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE shapes_fid_seq OWNED BY shapes.fid;
+
+
+--
+-- Name: source_files_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE source_files_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.source_files_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: source_files_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE source_files_id_seq OWNED BY source_files.id;
+
+
+--
+-- Name: source_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE source_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.source_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: source_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE source_id_seq OWNED BY source.id;
+
+
+--
+-- Name: sources_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE sources_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.sources_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: sources_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE sources_id_seq OWNED BY sources.id;
+
+
+--
+-- Name: spatial_ref_sys_srid_seq; Type: SEQUENCE; Schema: gstoredata; Owner: postgres
+--
+
+CREATE SEQUENCE spatial_ref_sys_srid_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.spatial_ref_sys_srid_seq OWNER TO postgres;
+
+--
+-- Name: states; Type: TABLE; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE TABLE states (
+    gid integer NOT NULL,
+    area double precision,
+    perimeter double precision,
+    statesp020 double precision,
+    state character varying(20),
+    state_fips character varying(2),
+    order_adm integer,
+    month_adm character varying(18),
+    day_adm double precision,
+    year_adm double precision,
+    the_geom public.geometry,
+    CONSTRAINT enforce_dims_the_geom CHECK ((public.st_ndims(the_geom) = 2)),
+    CONSTRAINT enforce_geotype_the_geom CHECK (((public.geometrytype(the_geom) = 'MULTIPOLYGON'::text) OR (the_geom IS NULL))),
+    CONSTRAINT enforce_srid_the_geom CHECK ((public.st_srid(the_geom) = 0))
+);
+
+
+ALTER TABLE gstoredata.states OWNER TO {{ gstoreuser }};
+
+--
+-- Name: states_gid_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE states_gid_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.states_gid_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: states_gid_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE states_gid_seq OWNED BY states.gid;
+
+
+--
+-- Name: tileindexes_datasets_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE tileindexes_datasets_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.tileindexes_datasets_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: tileindexes_datasets_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE tileindexes_datasets_id_seq OWNED BY tileindexes_datasets.id;
+
+
+--
+-- Name: tileindexes_id_seq; Type: SEQUENCE; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE SEQUENCE tileindexes_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE gstoredata.tileindexes_id_seq OWNER TO {{ gstoreuser }};
+
+--
+-- Name: tileindexes_id_seq; Type: SEQUENCE OWNED BY; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER SEQUENCE tileindexes_id_seq OWNED BY tileindexes.id;
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY apps ALTER COLUMN id SET DEFAULT nextval('apps_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY categories ALTER COLUMN id SET DEFAULT nextval('categories_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY citations ALTER COLUMN id SET DEFAULT nextval('citations_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY collection_metadata ALTER COLUMN id SET DEFAULT nextval('collection_metadata_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY collections ALTER COLUMN id SET DEFAULT nextval('collections_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_censorcodes ALTER COLUMN id SET DEFAULT nextval('cv_censorcodes_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_datatypes ALTER COLUMN id SET DEFAULT nextval('cv_datatypes_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_generalcategories ALTER COLUMN id SET DEFAULT nextval('cv_generalcategories_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_parametersources ALTER COLUMN id SET DEFAULT nextval('cv_parametersources_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_qualitycontrollevels ALTER COLUMN id SET DEFAULT nextval('cv_qualitycontrollevel_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_samplemediums ALTER COLUMN id SET DEFAULT nextval('cv_samplemediums_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_sampletypes ALTER COLUMN id SET DEFAULT nextval('cv_sampletypes_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_speciation ALTER COLUMN id SET DEFAULT nextval('cv_speciation_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_timeunits ALTER COLUMN id SET DEFAULT nextval('cv_timeunits_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_units ALTER COLUMN id SET DEFAULT nextval('cv_units_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_valuetypes ALTER COLUMN id SET DEFAULT nextval('cv_valuetypes_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY cv_variablenames ALTER COLUMN id SET DEFAULT nextval('cv_variablenames_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_core ALTER COLUMN id SET DEFAULT nextval('dataone_core_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_dataobjects ALTER COLUMN id SET DEFAULT nextval('dataone_dataobjects_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_datapackages ALTER COLUMN id SET DEFAULT nextval('dataone_datapackages_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_formatids ALTER COLUMN id SET DEFAULT nextval('dataone_formatids_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_obsoletes ALTER COLUMN id SET DEFAULT nextval('dataone_obsoletes_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_replicated_objects ALTER COLUMN id SET DEFAULT nextval('dataone_replicated_objects_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_sciencemetadata ALTER COLUMN id SET DEFAULT nextval('dataone_sciencemetadata_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_systemmetadata ALTER COLUMN id SET DEFAULT nextval('dataone_systemmetadata_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY datasets ALTER COLUMN id SET DEFAULT nextval('datasets_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY feature_attribute_representations ALTER COLUMN id SET DEFAULT nextval('feature_attribute_representations_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY features_attributes ALTER COLUMN id SET DEFAULT nextval('features_attributes_id_seq'::regclass);
+
+
+--
+-- Name: gid; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY geolookups ALTER COLUMN gid SET DEFAULT nextval('geolookups_gid_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY licenses ALTER COLUMN id SET DEFAULT nextval('licenses_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY lut_parameters ALTER COLUMN id SET DEFAULT nextval('lut_parameters_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_classes ALTER COLUMN id SET DEFAULT nextval('mapfile_classes_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_settings ALTER COLUMN id SET DEFAULT nextval('mapfile_settings_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_styles ALTER COLUMN id SET DEFAULT nextval('mapfile_styles_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_template ALTER COLUMN id SET DEFAULT nextval('mapfile_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY metadata ALTER COLUMN id SET DEFAULT nextval('metadata_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY metadata_standards ALTER COLUMN id SET DEFAULT nextval('metadata_standards_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY odm_networks ALTER COLUMN id SET DEFAULT nextval('odm_networks_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY odm_sites ALTER COLUMN id SET DEFAULT nextval('odm_sites_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY original_metadata ALTER COLUMN id SET DEFAULT nextval('original_metadata_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY parameters ALTER COLUMN id SET DEFAULT nextval('parameters_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY projects ALTER COLUMN id SET DEFAULT nextval('projects_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_bases ALTER COLUMN id SET DEFAULT nextval('provenance_bases_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_inputstandards ALTER COLUMN id SET DEFAULT nextval('provenance_inputstandards_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_mappings ALTER COLUMN id SET DEFAULT nextval('provenance_mappings_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_ontologies ALTER COLUMN id SET DEFAULT nextval('provenance_ontologies_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY relationships ALTER COLUMN id SET DEFAULT nextval('relationships_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY repositories ALTER COLUMN id SET DEFAULT nextval('repositories_id_seq'::regclass);
+
+
+--
+-- Name: fid; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY shapes ALTER COLUMN fid SET DEFAULT nextval('shapes_fid_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY source ALTER COLUMN id SET DEFAULT nextval('source_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY source_files ALTER COLUMN id SET DEFAULT nextval('source_files_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY sources ALTER COLUMN id SET DEFAULT nextval('sources_id_seq'::regclass);
+
+
+--
+-- Name: gid; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY states ALTER COLUMN gid SET DEFAULT nextval('states_gid_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY tileindexes ALTER COLUMN id SET DEFAULT nextval('tileindexes_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY model_runs ALTER COLUMN id SET DEFAULT nextval('model_runs_id_seq'::regclass);
+
+
+--
+-- Name: id; Type: DEFAULT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY tileindexes_datasets ALTER COLUMN id SET DEFAULT nextval('tileindexes_datasets_id_seq'::regclass);
+
+
+SET search_path = public, pg_catalog;
+
+--
+-- Data for Name: spatial_ref_sys; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY spatial_ref_sys (srid, auth_name, auth_srid, srtext, proj4text) FROM stdin;
+\.
+
+
+SET search_path = topology, pg_catalog;
+
+--
+-- Data for Name: layer; Type: TABLE DATA; Schema: topology; Owner: postgres
+--
+
+COPY layer (topology_id, layer_id, schema_name, table_name, feature_column, feature_type, level, child_id) FROM stdin;
+\.
+
+
+--
+-- Data for Name: topology; Type: TABLE DATA; Schema: topology; Owner: postgres
+--
+
+COPY topology (id, name, srid, "precision", hasz) FROM stdin;
+\.
+
+
+SET search_path = gstoredata, pg_catalog;
+
+--
+-- Name: apps_id_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY apps
+    ADD CONSTRAINT apps_id_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: categories_id_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY categories
+    ADD CONSTRAINT categories_id_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: citation_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY citations
+    ADD CONSTRAINT citation_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: collection_metadata_pk; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY collection_metadata
+    ADD CONSTRAINT collection_metadata_pk PRIMARY KEY (id);
+
+
+--
+-- Name: collections_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY collections
+    ADD CONSTRAINT collections_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_censorcodes_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_censorcodes
+    ADD CONSTRAINT cv_censorcodes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_datatypes_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_datatypes
+    ADD CONSTRAINT cv_datatypes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_generalcategories_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_generalcategories
+    ADD CONSTRAINT cv_generalcategories_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_parameterssources_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_parametersources
+    ADD CONSTRAINT cv_parameterssources_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_qualitcontrollevel_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_qualitycontrollevels
+    ADD CONSTRAINT cv_qualitcontrollevel_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_samplemediums_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_samplemediums
+    ADD CONSTRAINT cv_samplemediums_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_sampletypes_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_sampletypes
+    ADD CONSTRAINT cv_sampletypes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_speciation_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_speciation
+    ADD CONSTRAINT cv_speciation_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_timeunits_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_timeunits
+    ADD CONSTRAINT cv_timeunits_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_units_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_units
+    ADD CONSTRAINT cv_units_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_valuetypes_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_valuetypes
+    ADD CONSTRAINT cv_valuetypes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: cv_variablenames_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY cv_variablenames
+    ADD CONSTRAINT cv_variablenames_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: d1_dataobj_unique; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_dataobjects
+    ADD CONSTRAINT d1_dataobj_unique UNIQUE (uuid);
+
+
+--
+-- Name: d1_package_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_datapackages
+    ADD CONSTRAINT d1_package_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: d1_package_unique; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_datapackages
+    ADD CONSTRAINT d1_package_unique UNIQUE (uuid);
+
+
+--
+-- Name: d1_scimeta_unique; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_sciencemetadata
+    ADD CONSTRAINT d1_scimeta_unique UNIQUE (uuid);
+
+
+--
+-- Name: dataone_core_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_core
+    ADD CONSTRAINT dataone_core_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dataone_formats_pk; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_formatids
+    ADD CONSTRAINT dataone_formats_pk PRIMARY KEY (id);
+
+
+--
+-- Name: dataone_obsoletes_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_obsoletes
+    ADD CONSTRAINT dataone_obsoletes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dataone_sciencemetadata_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_sciencemetadata
+    ADD CONSTRAINT dataone_sciencemetadata_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: dataone_systemmetadata_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_systemmetadata
+    ADD CONSTRAINT dataone_systemmetadata_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: datasets_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY datasets
+    ADD CONSTRAINT datasets_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: datasets_unique_uuid_constraint; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY datasets
+    ADD CONSTRAINT datasets_unique_uuid_constraint UNIQUE (uuid);
+
+
+--
+-- Name: dateone_vectors_pk; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY dataone_dataobjects
+    ADD CONSTRAINT dateone_vectors_pk PRIMARY KEY (id);
+
+
+--
+-- Name: feature_attribute_representations_pk; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY feature_attribute_representations
+    ADD CONSTRAINT feature_attribute_representations_pk PRIMARY KEY (id);
+
+
+--
+-- Name: features_attributes_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY features_attributes
+    ADD CONSTRAINT features_attributes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: geolookups_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY geolookups
+    ADD CONSTRAINT geolookups_pkey PRIMARY KEY (gid);
+
+
+--
+-- Name: gid_dataset; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY shapes
+    ADD CONSTRAINT gid_dataset UNIQUE (gid, dataset_id);
+
+
+--
+-- Name: his_sites_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY odm_sites
+    ADD CONSTRAINT his_sites_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: license_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY licenses
+    ADD CONSTRAINT license_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: lut_parameters_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY lut_parameters
+    ADD CONSTRAINT lut_parameters_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mapfile_classes_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY mapfile_classes
+    ADD CONSTRAINT mapfile_classes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mapfile_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY mapfile_template
+    ADD CONSTRAINT mapfile_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mapfile_settings_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY mapfile_settings
+    ADD CONSTRAINT mapfile_settings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: mapfile_styles_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY mapfile_styles
+    ADD CONSTRAINT mapfile_styles_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: metadata_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY metadata
+    ADD CONSTRAINT metadata_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: metadata_standards_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY metadata_standards
+    ADD CONSTRAINT metadata_standards_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: odm_networks_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY odm_networks
+    ADD CONSTRAINT odm_networks_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: original_metadata_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY original_metadata
+    ADD CONSTRAINT original_metadata_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: parameters_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY parameters
+    ADD CONSTRAINT parameters_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: projects_pk; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY projects
+    ADD CONSTRAINT projects_pk PRIMARY KEY (id);
+
+
+--
+-- Name: provenance_bases_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY provenance_bases
+    ADD CONSTRAINT provenance_bases_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: provenance_inputstandards_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY provenance_inputstandards
+    ADD CONSTRAINT provenance_inputstandards_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: provenance_mappings_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY provenance_mappings
+    ADD CONSTRAINT provenance_mappings_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: provenance_ontology_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY provenance_ontologies
+    ADD CONSTRAINT provenance_ontology_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: relationships_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY relationships
+    ADD CONSTRAINT relationships_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: repositories_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY repositories
+    ADD CONSTRAINT repositories_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: source_files_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY source_files
+    ADD CONSTRAINT source_files_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: source_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY source
+    ADD CONSTRAINT source_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: sources_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY sources
+    ADD CONSTRAINT sources_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: states_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY states
+    ADD CONSTRAINT states_pkey PRIMARY KEY (gid);
+
+
+--
+-- Name: tileindexes_datasets_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY tileindexes_datasets
+    ADD CONSTRAINT tileindexes_datasets_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: tileindexes_pkey; Type: CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+ALTER TABLE ONLY tileindexes
+    ADD CONSTRAINT tileindexes_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: c_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX c_idx ON categories_datasets USING btree (category_id);
+
+
+--
+-- Name: categories_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX categories_idx ON categories USING btree (theme, subtheme, groupname);
+
+
+--
+-- Name: category_apps_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX category_apps_idx ON categories USING btree (theme, subtheme, groupname, apps);
+
+
+--
+-- Name: cv_datatypes_id_key; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE UNIQUE INDEX cv_datatypes_id_key ON cv_datatypes USING btree (id);
+
+
+--
+-- Name: cv_units_id_key; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE UNIQUE INDEX cv_units_id_key ON cv_units USING btree (id);
+
+
+--
+-- Name: d_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX d_idx ON categories_datasets USING btree (dataset_id);
+
+
+--
+-- Name: dataset_shapes_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX dataset_shapes_idx ON shapes USING btree (dataset_id);
+
+
+--
+-- Name: datasets_apps_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX datasets_apps_idx ON datasets USING gin (apps_cache);
+
+
+--
+-- Name: datasets_uuid_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX datasets_uuid_idx ON datasets USING btree (uuid);
+
+
+--
+-- Name: fki_d1_dataobj_package_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_d1_dataobj_package_fkey ON dataone_datapackages USING btree (dataobj_uuid);
+
+
+--
+-- Name: fki_features_attributes_parameter_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_features_attributes_parameter_fkey ON features_attributes USING btree (parameter_id);
+
+
+--
+-- Name: fki_mapfile_settings_classes_class_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_mapfile_settings_classes_class_fkey ON mapfile_settings_classes USING btree (class_id);
+
+
+--
+-- Name: fki_mapfile_settings_classes_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_mapfile_settings_classes_fkey ON mapfile_settings_classes USING btree (settings_id);
+
+
+--
+-- Name: fki_metadata_originalmetadata_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_metadata_originalmetadata_fkey ON metadata USING btree (original_id);
+
+
+--
+-- Name: fki_original_metadata_datasets_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_original_metadata_datasets_fkey ON original_metadata USING btree (dataset_id);
+
+
+--
+-- Name: fki_parameter_parameterluts_lut_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_parameter_parameterluts_lut_fkey ON parameters_parameterluts USING btree (lut_id);
+
+
+--
+-- Name: fki_parameter_parameterluts_par_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_parameter_parameterluts_par_fkey ON parameters_parameterluts USING btree (parameter_id);
+
+
+--
+-- Name: fki_provenance_bases_dataset_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_provenance_bases_dataset_fkey ON provenance_bases USING btree (dataset_id);
+
+
+--
+-- Name: fki_source_files_sources_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_source_files_sources_fkey ON source_files USING btree (source_id);
+
+
+--
+-- Name: fki_sources_datasets_fkey; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX fki_sources_datasets_fkey ON sources USING btree (dataset_id);
+
+
+--
+-- Name: geom_datasets_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX geom_datasets_idx ON datasets USING gist (geom);
+
+
+--
+-- Name: geom_shapes_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX geom_shapes_idx ON shapes USING gist (geom);
+
+
+--
+-- Name: key_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX key_idx ON categories_datasets USING btree (category_id, dataset_id);
+
+
+--
+-- Name: repositories_apps_datasets_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX repositories_apps_datasets_idx ON repositories_apps_datasets USING btree (dataset_id NULLS FIRST, repository_id NULLS FIRST, app_id NULLS FIRST);
+
+
+--
+-- Name: shapes_fid_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX shapes_fid_idx ON shapes USING btree (fid, dataset_id);
+
+
+--
+-- Name: states_the_geom_gist; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX states_the_geom_gist ON states USING gist (the_geom);
+
+
+--
+-- Name: theme_lower_idx; Type: INDEX; Schema: gstoredata; Owner: {{ gstoreuser }}; Tablespace: 
+--
+
+CREATE INDEX theme_lower_idx ON categories USING btree (lower((theme)::text) varchar_pattern_ops);
+
+
+SET search_path = public, pg_catalog;
+
+--
+-- Name: geometry_columns_delete; Type: RULE; Schema: public; Owner: postgres
+--
+
+CREATE RULE geometry_columns_delete AS ON DELETE TO geometry_columns DO INSTEAD NOTHING;
+
+
+--
+-- Name: geometry_columns_insert; Type: RULE; Schema: public; Owner: postgres
+--
+
+CREATE RULE geometry_columns_insert AS ON INSERT TO geometry_columns DO INSTEAD NOTHING;
+
+
+--
+-- Name: geometry_columns_update; Type: RULE; Schema: public; Owner: postgres
+--
+
+CREATE RULE geometry_columns_update AS ON UPDATE TO geometry_columns DO INSTEAD NOTHING;
+
+
+SET search_path = gstoredata, pg_catalog;
+
+--
+-- Name: update_collection_metadata_timestamp; Type: TRIGGER; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE TRIGGER update_collection_metadata_timestamp BEFORE UPDATE OF gstore_xml ON collection_metadata FOR EACH ROW EXECUTE PROCEDURE update_modified_timestamp();
+
+
+--
+-- Name: update_metadata_timestamp; Type: TRIGGER; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE TRIGGER update_metadata_timestamp BEFORE UPDATE OF gstore_xml ON metadata FOR EACH ROW EXECUTE PROCEDURE update_modified_timestamp();
+
+
+--
+-- Name: update_original_metadata_timestamp; Type: TRIGGER; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+CREATE TRIGGER update_original_metadata_timestamp BEFORE UPDATE OF original_xml ON original_metadata FOR EACH ROW EXECUTE PROCEDURE update_modified_timestamp();
+
+
+--
+-- Name: collection_metadata_collection_fk; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY collection_metadata
+    ADD CONSTRAINT collection_metadata_collection_fk FOREIGN KEY (collection_id) REFERENCES collections(id);
+
+
+--
+-- Name: collections_datasets_collection_id_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY collections_datasets
+    ADD CONSTRAINT collections_datasets_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections(id);
+
+
+--
+-- Name: collections_datasets_dataset_id_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY collections_datasets
+    ADD CONSTRAINT collections_datasets_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: d1_core_obsoletes_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_obsoletes
+    ADD CONSTRAINT d1_core_obsoletes_fkey FOREIGN KEY (core_id) REFERENCES dataone_core(id);
+
+
+--
+-- Name: d1_dataobj_format_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_dataobjects
+    ADD CONSTRAINT d1_dataobj_format_fkey FOREIGN KEY (format_id) REFERENCES dataone_formatids(id);
+
+
+--
+-- Name: d1_dataobj_package_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_datapackages
+    ADD CONSTRAINT d1_dataobj_package_fkey FOREIGN KEY (dataobj_uuid) REFERENCES dataone_dataobjects(uuid);
+
+
+--
+-- Name: d1_dataset_dataobj_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_dataobjects
+    ADD CONSTRAINT d1_dataset_dataobj_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: d1_package_format_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_datapackages
+    ADD CONSTRAINT d1_package_format_fkey FOREIGN KEY (format_id) REFERENCES dataone_formatids(id);
+
+
+--
+-- Name: d1_scimeta_dataset_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_sciencemetadata
+    ADD CONSTRAINT d1_scimeta_dataset_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: d1_scimeta_format_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_sciencemetadata
+    ADD CONSTRAINT d1_scimeta_format_fkey FOREIGN KEY (format_id) REFERENCES dataone_formatids(id);
+
+
+--
+-- Name: d1_scimeta_package_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_datapackages
+    ADD CONSTRAINT d1_scimeta_package_fkey FOREIGN KEY (scimetadataobj_uuid) REFERENCES dataone_sciencemetadata(uuid);
+
+
+--
+-- Name: d1_scimeta_standard_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_sciencemetadata
+    ADD CONSTRAINT d1_scimeta_standard_fkey FOREIGN KEY (standard_id) REFERENCES metadata_standards(id);
+
+
+--
+-- Name: dar_repository_app_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY repositories_apps_datasets
+    ADD CONSTRAINT dar_repository_app_fkey FOREIGN KEY (app_id) REFERENCES apps(id);
+
+
+--
+-- Name: dar_repository_dataset_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY repositories_apps_datasets
+    ADD CONSTRAINT dar_repository_dataset_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: dar_repository_repo_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY repositories_apps_datasets
+    ADD CONSTRAINT dar_repository_repo_fkey FOREIGN KEY (repository_id) REFERENCES repositories(id);
+
+
+--
+-- Name: dataone_systemmetadata_obsolete_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY dataone_systemmetadata
+    ADD CONSTRAINT dataone_systemmetadata_obsolete_fkey FOREIGN KEY (obsolete_id) REFERENCES dataone_obsoletes(id);
+
+
+--
+-- Name: dataset_fk; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY datasets_mapfiles
+    ADD CONSTRAINT dataset_fk FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: dataset_license_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY datasets
+    ADD CONSTRAINT dataset_license_fkey FOREIGN KEY (license_id) REFERENCES licenses(id);
+
+
+--
+-- Name: datasets_projects_datasetid_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY projects_datasets
+    ADD CONSTRAINT datasets_projects_datasetid_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: datasets_projects_projectid_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY projects_datasets
+    ADD CONSTRAINT datasets_projects_projectid_fkey FOREIGN KEY (project_id) REFERENCES projects(id);
+
+
+--
+-- Name: datasets_qualitycontrollevel_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY datasets
+    ADD CONSTRAINT datasets_qualitycontrollevel_fkey FOREIGN KEY (qualitycontrollevel_id) REFERENCES cv_qualitycontrollevels(id);
+
+
+--
+-- Name: datasets_sources_dataset_id_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY datasets_sources
+    ADD CONSTRAINT datasets_sources_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE;
+
+
+--
+-- Name: feature_attributes_representations_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY feature_attribute_representations
+    ADD CONSTRAINT feature_attributes_representations_fkey FOREIGN KEY (attribute_id) REFERENCES features_attributes(id);
+
+
+--
+-- Name: features_attributes_dataset_id_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY features_attributes
+    ADD CONSTRAINT features_attributes_dataset_id_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE;
+
+
+--
+-- Name: features_attributes_parameter_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY features_attributes
+    ADD CONSTRAINT features_attributes_parameter_fkey FOREIGN KEY (parameter_id) REFERENCES parameters(id);
+
+
+--
+-- Name: mapfile_classes_settings_style_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_settings_styles
+    ADD CONSTRAINT mapfile_classes_settings_style_fkey FOREIGN KEY (style_id) REFERENCES mapfile_styles(id);
+
+
+--
+-- Name: mapfile_settings_classes_class_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_settings_classes
+    ADD CONSTRAINT mapfile_settings_classes_class_fkey FOREIGN KEY (class_id) REFERENCES mapfile_classes(id);
+
+
+--
+-- Name: mapfile_settings_classes_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_settings_classes
+    ADD CONSTRAINT mapfile_settings_classes_fkey FOREIGN KEY (settings_id) REFERENCES mapfile_settings(id);
+
+
+--
+-- Name: mapfile_settings_styles_settings_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_settings_styles
+    ADD CONSTRAINT mapfile_settings_styles_settings_fkey FOREIGN KEY (settings_id) REFERENCES mapfile_settings(id);
+
+
+--
+-- Name: metadata_dataset_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY metadata
+    ADD CONSTRAINT metadata_dataset_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: metadata_originalmetadata_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY metadata
+    ADD CONSTRAINT metadata_originalmetadata_fkey FOREIGN KEY (original_id) REFERENCES original_metadata(id);
+
+
+--
+-- Name: odm_sites_datasets_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY odm_sites_datasets
+    ADD CONSTRAINT odm_sites_datasets_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: odm_sites_sites_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY odm_sites_datasets
+    ADD CONSTRAINT odm_sites_sites_fkey FOREIGN KEY (site_id) REFERENCES odm_sites(id);
+
+
+--
+-- Name: original_metadata_datasets_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY original_metadata
+    ADD CONSTRAINT original_metadata_datasets_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: parameter_parameterluts_lut_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY parameters_parameterluts
+    ADD CONSTRAINT parameter_parameterluts_lut_fkey FOREIGN KEY (lut_id) REFERENCES lut_parameters(id);
+
+
+--
+-- Name: parameter_parameterluts_par_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY parameters_parameterluts
+    ADD CONSTRAINT parameter_parameterluts_par_fkey FOREIGN KEY (parameter_id) REFERENCES parameters(id);
+
+
+--
+-- Name: parameters_datatype_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY parameters
+    ADD CONSTRAINT parameters_datatype_fkey FOREIGN KEY (datatype_id) REFERENCES cv_datatypes(id);
+
+
+--
+-- Name: parameters_parameterssource_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY parameters
+    ADD CONSTRAINT parameters_parameterssource_fkey FOREIGN KEY (parametersource_id) REFERENCES cv_parametersources(id);
+
+
+--
+-- Name: parameters_zvalue_units_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY parameters
+    ADD CONSTRAINT parameters_zvalue_units_fkey FOREIGN KEY (zvalue_units_id) REFERENCES cv_units(id);
+
+
+--
+-- Name: provenance_base_inputstandard_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_bases
+    ADD CONSTRAINT provenance_base_inputstandard_fkey FOREIGN KEY (inputstandards_id) REFERENCES provenance_inputstandards(id);
+
+
+--
+-- Name: provenance_bases_dataset_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_bases
+    ADD CONSTRAINT provenance_bases_dataset_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: provenance_bases_ontologies_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_bases
+    ADD CONSTRAINT provenance_bases_ontologies_fkey FOREIGN KEY (ontology_id) REFERENCES provenance_ontologies(id);
+
+
+--
+-- Name: provenance_mapping_inputstandard_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_mappings
+    ADD CONSTRAINT provenance_mapping_inputstandard_fkey FOREIGN KEY (inputstandards_id) REFERENCES provenance_inputstandards(id);
+
+
+--
+-- Name: provenance_mapping_ontology_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_mappings
+    ADD CONSTRAINT provenance_mapping_ontology_fkey FOREIGN KEY (ontology_id) REFERENCES provenance_ontologies(id);
+
+
+--
+-- Name: provenance_ontology_apps_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY provenance_ontologies
+    ADD CONSTRAINT provenance_ontology_apps_fkey FOREIGN KEY (app_id) REFERENCES apps(id);
+
+
+--
+-- Name: source_files_sources_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY source_files
+    ADD CONSTRAINT source_files_sources_fkey FOREIGN KEY (source_id) REFERENCES sources(id);
+
+
+--
+-- Name: sources_datasets_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY sources
+    ADD CONSTRAINT sources_datasets_fkey FOREIGN KEY (dataset_id) REFERENCES datasets(id);
+
+
+--
+-- Name: sources_mapfilesettings_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY mapfile_settings
+    ADD CONSTRAINT sources_mapfilesettings_fkey FOREIGN KEY (source_id) REFERENCES sources(id);
+
+
+--
+-- Name: tilindexes_datasets_tile_id_fkey; Type: FK CONSTRAINT; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+ALTER TABLE ONLY tileindexes_datasets
+    ADD CONSTRAINT tilindexes_datasets_tile_id_fkey FOREIGN KEY (tile_id) REFERENCES tileindexes(id);
+
+
+--
+-- Name: gstoredata; Type: ACL; Schema: -; Owner: postgres
+--
+
+REVOKE ALL ON SCHEMA gstoredata FROM PUBLIC;
+REVOKE ALL ON SCHEMA gstoredata FROM postgres;
+GRANT ALL ON SCHEMA gstoredata TO postgres;
+GRANT USAGE ON SCHEMA gstoredata TO gstore;
+
+
+--
+-- Name: public; Type: ACL; Schema: -; Owner: postgres
+--
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM postgres;
+GRANT ALL ON SCHEMA public TO postgres;
+GRANT ALL ON SCHEMA public TO PUBLIC;
+
+
+--
+-- Name: topology; Type: ACL; Schema: -; Owner: postgres
+--
+
+REVOKE ALL ON SCHEMA topology FROM PUBLIC;
+REVOKE ALL ON SCHEMA topology FROM postgres;
+GRANT ALL ON SCHEMA topology TO postgres;
+GRANT USAGE ON SCHEMA topology TO gstore;
+
+
+--
+-- Name: intersect_geolookup(integer, character varying); Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON FUNCTION intersect_geolookup(dataset_id integer, lut_type character varying) FROM PUBLIC;
+REVOKE ALL ON FUNCTION intersect_geolookup(dataset_id integer, lut_type character varying) FROM gstore;
+GRANT ALL ON FUNCTION intersect_geolookup(dataset_id integer, lut_type character varying) TO gstore;
+GRANT ALL ON FUNCTION intersect_geolookup(dataset_id integer, lut_type character varying) TO PUBLIC;
+GRANT ALL ON FUNCTION intersect_geolookup(dataset_id integer, lut_type character varying) TO gstore;
+
+
+--
+-- Name: apps; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE apps FROM PUBLIC;
+REVOKE ALL ON TABLE apps FROM gstore;
+GRANT ALL ON TABLE apps TO gstore;
+GRANT SELECT ON TABLE apps TO gstore;
+
+
+--
+-- Name: categories; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE categories FROM PUBLIC;
+REVOKE ALL ON TABLE categories FROM gstore;
+GRANT ALL ON TABLE categories TO gstore;
+GRANT SELECT ON TABLE categories TO gstore;
+
+
+--
+-- Name: categories_collections; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE categories_collections FROM PUBLIC;
+REVOKE ALL ON TABLE categories_collections FROM gstore;
+GRANT ALL ON TABLE categories_collections TO gstore;
+GRANT SELECT ON TABLE categories_collections TO gstore;
+
+
+--
+-- Name: categories_datasets; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE categories_datasets FROM PUBLIC;
+REVOKE ALL ON TABLE categories_datasets FROM gstore;
+GRANT ALL ON TABLE categories_datasets TO gstore;
+GRANT SELECT ON TABLE categories_datasets TO gstore;
+
+
+--
+-- Name: citations; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE citations FROM PUBLIC;
+REVOKE ALL ON TABLE citations FROM gstore;
+GRANT ALL ON TABLE citations TO gstore;
+GRANT SELECT ON TABLE citations TO gstore;
+
+
+--
+-- Name: collection_metadata; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE collection_metadata FROM PUBLIC;
+REVOKE ALL ON TABLE collection_metadata FROM gstore;
+GRANT ALL ON TABLE collection_metadata TO gstore;
+GRANT SELECT ON TABLE collection_metadata TO gstore;
+
+
+--
+-- Name: collections; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE collections FROM PUBLIC;
+REVOKE ALL ON TABLE collections FROM gstore;
+GRANT ALL ON TABLE collections TO gstore;
+GRANT SELECT ON TABLE collections TO gstore;
+
+
+--
+-- Name: collections_datasets; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE collections_datasets FROM PUBLIC;
+REVOKE ALL ON TABLE collections_datasets FROM gstore;
+GRANT ALL ON TABLE collections_datasets TO gstore;
+GRANT SELECT ON TABLE collections_datasets TO gstore;
+
+
+--
+-- Name: cv_censorcodes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_censorcodes FROM PUBLIC;
+REVOKE ALL ON TABLE cv_censorcodes FROM gstore;
+GRANT ALL ON TABLE cv_censorcodes TO gstore;
+GRANT SELECT ON TABLE cv_censorcodes TO gstore;
+
+
+--
+-- Name: cv_datatypes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_datatypes FROM PUBLIC;
+REVOKE ALL ON TABLE cv_datatypes FROM gstore;
+GRANT ALL ON TABLE cv_datatypes TO gstore;
+GRANT SELECT ON TABLE cv_datatypes TO gstore;
+
+
+--
+-- Name: cv_generalcategories; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_generalcategories FROM PUBLIC;
+REVOKE ALL ON TABLE cv_generalcategories FROM gstore;
+GRANT ALL ON TABLE cv_generalcategories TO gstore;
+GRANT SELECT ON TABLE cv_generalcategories TO gstore;
+
+
+--
+-- Name: cv_parametersources; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_parametersources FROM PUBLIC;
+REVOKE ALL ON TABLE cv_parametersources FROM gstore;
+GRANT ALL ON TABLE cv_parametersources TO gstore;
+GRANT SELECT ON TABLE cv_parametersources TO gstore;
+
+
+--
+-- Name: cv_qualitycontrollevels; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_qualitycontrollevels FROM PUBLIC;
+REVOKE ALL ON TABLE cv_qualitycontrollevels FROM gstore;
+GRANT ALL ON TABLE cv_qualitycontrollevels TO gstore;
+GRANT SELECT ON TABLE cv_qualitycontrollevels TO gstore;
+
+
+--
+-- Name: cv_samplemediums; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_samplemediums FROM PUBLIC;
+REVOKE ALL ON TABLE cv_samplemediums FROM gstore;
+GRANT ALL ON TABLE cv_samplemediums TO gstore;
+GRANT SELECT ON TABLE cv_samplemediums TO gstore;
+
+
+--
+-- Name: cv_sampletypes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_sampletypes FROM PUBLIC;
+REVOKE ALL ON TABLE cv_sampletypes FROM gstore;
+GRANT ALL ON TABLE cv_sampletypes TO gstore;
+GRANT SELECT ON TABLE cv_sampletypes TO gstore;
+
+
+--
+-- Name: cv_speciation; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_speciation FROM PUBLIC;
+REVOKE ALL ON TABLE cv_speciation FROM gstore;
+GRANT ALL ON TABLE cv_speciation TO gstore;
+GRANT SELECT ON TABLE cv_speciation TO gstore;
+
+
+--
+-- Name: cv_timeunits; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_timeunits FROM PUBLIC;
+REVOKE ALL ON TABLE cv_timeunits FROM gstore;
+GRANT ALL ON TABLE cv_timeunits TO gstore;
+GRANT SELECT ON TABLE cv_timeunits TO gstore;
+
+
+--
+-- Name: cv_units; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_units FROM PUBLIC;
+REVOKE ALL ON TABLE cv_units FROM gstore;
+GRANT ALL ON TABLE cv_units TO gstore;
+GRANT SELECT ON TABLE cv_units TO gstore;
+
+
+--
+-- Name: cv_valuetypes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_valuetypes FROM PUBLIC;
+REVOKE ALL ON TABLE cv_valuetypes FROM gstore;
+GRANT ALL ON TABLE cv_valuetypes TO gstore;
+GRANT SELECT ON TABLE cv_valuetypes TO gstore;
+
+
+--
+-- Name: cv_variablenames; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE cv_variablenames FROM PUBLIC;
+REVOKE ALL ON TABLE cv_variablenames FROM gstore;
+GRANT ALL ON TABLE cv_variablenames TO gstore;
+GRANT SELECT ON TABLE cv_variablenames TO gstore;
+
+
+--
+-- Name: dataone_core; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE dataone_core FROM PUBLIC;
+REVOKE ALL ON TABLE dataone_core FROM gstore;
+GRANT ALL ON TABLE dataone_core TO gstore;
+GRANT SELECT ON TABLE dataone_core TO gstore;
+
+
+--
+-- Name: dataone_dataobjects; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE dataone_dataobjects FROM PUBLIC;
+REVOKE ALL ON TABLE dataone_dataobjects FROM gstore;
+GRANT ALL ON TABLE dataone_dataobjects TO gstore;
+GRANT SELECT ON TABLE dataone_dataobjects TO gstore;
+
+
+--
+-- Name: dataone_datapackages; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE dataone_datapackages FROM PUBLIC;
+REVOKE ALL ON TABLE dataone_datapackages FROM gstore;
+GRANT ALL ON TABLE dataone_datapackages TO gstore;
+GRANT SELECT ON TABLE dataone_datapackages TO gstore;
+
+
+--
+-- Name: dataone_formatids; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE dataone_formatids FROM PUBLIC;
+REVOKE ALL ON TABLE dataone_formatids FROM gstore;
+GRANT ALL ON TABLE dataone_formatids TO gstore;
+GRANT SELECT ON TABLE dataone_formatids TO gstore;
+
+
+--
+-- Name: dataone_obsoletes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE dataone_obsoletes FROM PUBLIC;
+REVOKE ALL ON TABLE dataone_obsoletes FROM gstore;
+GRANT ALL ON TABLE dataone_obsoletes TO gstore;
+GRANT SELECT ON TABLE dataone_obsoletes TO gstore;
+
+
+--
+-- Name: dataone_sciencemetadata; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE dataone_sciencemetadata FROM PUBLIC;
+REVOKE ALL ON TABLE dataone_sciencemetadata FROM gstore;
+GRANT ALL ON TABLE dataone_sciencemetadata TO gstore;
+GRANT SELECT ON TABLE dataone_sciencemetadata TO gstore;
+
+
+--
+-- Name: dataone_systemmetadata; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE dataone_systemmetadata FROM PUBLIC;
+REVOKE ALL ON TABLE dataone_systemmetadata FROM gstore;
+GRANT ALL ON TABLE dataone_systemmetadata TO gstore;
+GRANT SELECT ON TABLE dataone_systemmetadata TO gstore;
+
+
+--
+-- Name: datasets; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE datasets FROM PUBLIC;
+REVOKE ALL ON TABLE datasets FROM gstore;
+GRANT ALL ON TABLE datasets TO gstore;
+GRANT SELECT ON TABLE datasets TO gstore;
+
+
+--
+-- Name: datasets_citations; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE datasets_citations FROM PUBLIC;
+REVOKE ALL ON TABLE datasets_citations FROM gstore;
+GRANT ALL ON TABLE datasets_citations TO gstore;
+GRANT SELECT ON TABLE datasets_citations TO gstore;
+
+
+--
+-- Name: datasets_mapfiles; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE datasets_mapfiles FROM PUBLIC;
+REVOKE ALL ON TABLE datasets_mapfiles FROM gstore;
+GRANT ALL ON TABLE datasets_mapfiles TO gstore;
+GRANT SELECT ON TABLE datasets_mapfiles TO gstore;
+
+
+--
+-- Name: datasets_sources; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE datasets_sources FROM PUBLIC;
+REVOKE ALL ON TABLE datasets_sources FROM gstore;
+GRANT ALL ON TABLE datasets_sources TO gstore;
+GRANT SELECT ON TABLE datasets_sources TO gstore;
+
+
+--
+-- Name: feature_attribute_representations; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE feature_attribute_representations FROM PUBLIC;
+REVOKE ALL ON TABLE feature_attribute_representations FROM gstore;
+GRANT ALL ON TABLE feature_attribute_representations TO gstore;
+GRANT SELECT ON TABLE feature_attribute_representations TO gstore;
+
+
+--
+-- Name: features_attributes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE features_attributes FROM PUBLIC;
+REVOKE ALL ON TABLE features_attributes FROM gstore;
+GRANT ALL ON TABLE features_attributes TO gstore;
+GRANT SELECT ON TABLE features_attributes TO gstore;
+
+
+--
+-- Name: geolookups; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE geolookups FROM PUBLIC;
+REVOKE ALL ON TABLE geolookups FROM gstore;
+GRANT ALL ON TABLE geolookups TO gstore;
+GRANT SELECT ON TABLE geolookups TO gstore;
+
+
+--
+-- Name: get_index; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE get_index FROM PUBLIC;
+REVOKE ALL ON TABLE get_index FROM gstore;
+GRANT ALL ON TABLE get_index TO gstore;
+GRANT SELECT ON TABLE get_index TO gstore;
+
+
+--
+-- Name: source; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE source FROM PUBLIC;
+REVOKE ALL ON TABLE source FROM gstore;
+GRANT ALL ON TABLE source TO gstore;
+GRANT SELECT ON TABLE source TO gstore;
+
+
+--
+-- Name: get_sources; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE get_sources FROM PUBLIC;
+REVOKE ALL ON TABLE get_sources FROM gstore;
+GRANT ALL ON TABLE get_sources TO gstore;
+GRANT SELECT ON TABLE get_sources TO gstore;
+
+
+--
+-- Name: source_files; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE source_files FROM PUBLIC;
+REVOKE ALL ON TABLE source_files FROM gstore;
+GRANT ALL ON TABLE source_files TO gstore;
+GRANT SELECT ON TABLE source_files TO gstore;
+
+
+--
+-- Name: sources; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE sources FROM PUBLIC;
+REVOKE ALL ON TABLE sources FROM gstore;
+GRANT ALL ON TABLE sources TO gstore;
+GRANT SELECT ON TABLE sources TO gstore;
+
+
+--
+-- Name: tileindexes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE tileindexes FROM PUBLIC;
+REVOKE ALL ON TABLE tileindexes FROM gstore;
+GRANT ALL ON TABLE tileindexes TO gstore;
+GRANT SELECT ON TABLE tileindexes TO gstore;
+
+
+--
+-- Name: tileindexes_datasets; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE tileindexes_datasets FROM PUBLIC;
+REVOKE ALL ON TABLE tileindexes_datasets FROM gstore;
+GRANT ALL ON TABLE tileindexes_datasets TO gstore;
+GRANT SELECT ON TABLE tileindexes_datasets TO gstore;
+
+
+--
+-- Name: get_tileindexes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE get_tileindexes FROM PUBLIC;
+REVOKE ALL ON TABLE get_tileindexes FROM gstore;
+GRANT ALL ON TABLE get_tileindexes TO gstore;
+GRANT SELECT ON TABLE get_tileindexes TO gstore;
+
+
+--
+-- Name: get_view; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE get_view FROM PUBLIC;
+REVOKE ALL ON TABLE get_view FROM gstore;
+GRANT ALL ON TABLE get_view TO gstore;
+GRANT SELECT ON TABLE get_view TO gstore;
+
+
+--
+-- Name: licenses; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE licenses FROM PUBLIC;
+REVOKE ALL ON TABLE licenses FROM gstore;
+GRANT ALL ON TABLE licenses TO gstore;
+GRANT SELECT ON TABLE licenses TO gstore;
+
+
+--
+-- Name: lut_parameters; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE lut_parameters FROM PUBLIC;
+REVOKE ALL ON TABLE lut_parameters FROM gstore;
+GRANT ALL ON TABLE lut_parameters TO gstore;
+GRANT SELECT ON TABLE lut_parameters TO gstore;
+
+
+--
+-- Name: mapfile_classes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE mapfile_classes FROM PUBLIC;
+REVOKE ALL ON TABLE mapfile_classes FROM gstore;
+GRANT ALL ON TABLE mapfile_classes TO gstore;
+GRANT SELECT ON TABLE mapfile_classes TO gstore;
+
+
+--
+-- Name: mapfile_template; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE mapfile_template FROM PUBLIC;
+REVOKE ALL ON TABLE mapfile_template FROM gstore;
+GRANT ALL ON TABLE mapfile_template TO gstore;
+GRANT SELECT ON TABLE mapfile_template TO gstore;
+
+
+--
+-- Name: mapfile_settings; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE mapfile_settings FROM PUBLIC;
+REVOKE ALL ON TABLE mapfile_settings FROM gstore;
+GRANT ALL ON TABLE mapfile_settings TO gstore;
+GRANT SELECT ON TABLE mapfile_settings TO gstore;
+
+
+--
+-- Name: mapfile_settings_classes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE mapfile_settings_classes FROM PUBLIC;
+REVOKE ALL ON TABLE mapfile_settings_classes FROM gstore;
+GRANT ALL ON TABLE mapfile_settings_classes TO gstore;
+GRANT SELECT ON TABLE mapfile_settings_classes TO gstore;
+
+
+--
+-- Name: mapfile_settings_styles; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE mapfile_settings_styles FROM PUBLIC;
+REVOKE ALL ON TABLE mapfile_settings_styles FROM gstore;
+GRANT ALL ON TABLE mapfile_settings_styles TO gstore;
+GRANT SELECT ON TABLE mapfile_settings_styles TO gstore;
+
+
+--
+-- Name: mapfile_styles; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE mapfile_styles FROM PUBLIC;
+REVOKE ALL ON TABLE mapfile_styles FROM gstore;
+GRANT ALL ON TABLE mapfile_styles TO gstore;
+GRANT SELECT ON TABLE mapfile_styles TO gstore;
+
+
+--
+-- Name: metadata; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE metadata FROM PUBLIC;
+REVOKE ALL ON TABLE metadata FROM gstore;
+GRANT ALL ON TABLE metadata TO gstore;
+GRANT SELECT ON TABLE metadata TO gstore;
+
+
+--
+-- Name: metadata_standards; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE metadata_standards FROM PUBLIC;
+REVOKE ALL ON TABLE metadata_standards FROM gstore;
+GRANT ALL ON TABLE metadata_standards TO gstore;
+GRANT SELECT ON TABLE metadata_standards TO gstore;
+
+
+--
+-- Name: odm_networks; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE odm_networks FROM PUBLIC;
+REVOKE ALL ON TABLE odm_networks FROM gstore;
+GRANT ALL ON TABLE odm_networks TO gstore;
+GRANT SELECT ON TABLE odm_networks TO gstore;
+
+
+--
+-- Name: odm_sites; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE odm_sites FROM PUBLIC;
+REVOKE ALL ON TABLE odm_sites FROM gstore;
+GRANT ALL ON TABLE odm_sites TO gstore;
+GRANT SELECT ON TABLE odm_sites TO gstore;
+
+
+--
+-- Name: odm_sites_datasets; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE odm_sites_datasets FROM PUBLIC;
+REVOKE ALL ON TABLE odm_sites_datasets FROM gstore;
+GRANT ALL ON TABLE odm_sites_datasets TO gstore;
+GRANT SELECT ON TABLE odm_sites_datasets TO gstore;
+
+
+--
+-- Name: original_metadata; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE original_metadata FROM PUBLIC;
+REVOKE ALL ON TABLE original_metadata FROM gstore;
+GRANT ALL ON TABLE original_metadata TO gstore;
+GRANT SELECT ON TABLE original_metadata TO gstore;
+
+
+--
+-- Name: parameters; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE parameters FROM PUBLIC;
+REVOKE ALL ON TABLE parameters FROM gstore;
+GRANT ALL ON TABLE parameters TO gstore;
+GRANT SELECT ON TABLE parameters TO gstore;
+
+
+--
+-- Name: parameters_parameterluts; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE parameters_parameterluts FROM PUBLIC;
+REVOKE ALL ON TABLE parameters_parameterluts FROM gstore;
+GRANT ALL ON TABLE parameters_parameterluts TO gstore;
+GRANT SELECT ON TABLE parameters_parameterluts TO gstore;
+
+
+--
+-- Name: projects; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE projects FROM PUBLIC;
+REVOKE ALL ON TABLE projects FROM gstore;
+GRANT ALL ON TABLE projects TO gstore;
+GRANT SELECT ON TABLE projects TO gstore;
+
+
+--
+-- Name: projects_datasets; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE projects_datasets FROM PUBLIC;
+REVOKE ALL ON TABLE projects_datasets FROM gstore;
+GRANT ALL ON TABLE projects_datasets TO gstore;
+GRANT SELECT ON TABLE projects_datasets TO gstore;
+
+
+--
+-- Name: provenance_bases; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE provenance_bases FROM PUBLIC;
+REVOKE ALL ON TABLE provenance_bases FROM gstore;
+GRANT ALL ON TABLE provenance_bases TO gstore;
+GRANT SELECT ON TABLE provenance_bases TO gstore;
+
+
+--
+-- Name: provenance_inputstandards; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE provenance_inputstandards FROM PUBLIC;
+REVOKE ALL ON TABLE provenance_inputstandards FROM gstore;
+GRANT ALL ON TABLE provenance_inputstandards TO gstore;
+GRANT SELECT ON TABLE provenance_inputstandards TO gstore;
+
+
+--
+-- Name: provenance_mappings; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE provenance_mappings FROM PUBLIC;
+REVOKE ALL ON TABLE provenance_mappings FROM gstore;
+GRANT ALL ON TABLE provenance_mappings TO gstore;
+GRANT SELECT ON TABLE provenance_mappings TO gstore;
+
+
+--
+-- Name: provenance_ontologies; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE provenance_ontologies FROM PUBLIC;
+REVOKE ALL ON TABLE provenance_ontologies FROM gstore;
+GRANT ALL ON TABLE provenance_ontologies TO gstore;
+GRANT SELECT ON TABLE provenance_ontologies TO gstore;
+
+
+--
+-- Name: relationships; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE relationships FROM PUBLIC;
+REVOKE ALL ON TABLE relationships FROM gstore;
+GRANT ALL ON TABLE relationships TO gstore;
+GRANT SELECT ON TABLE relationships TO gstore;
+
+
+--
+-- Name: repositories; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE repositories FROM PUBLIC;
+REVOKE ALL ON TABLE repositories FROM gstore;
+GRANT ALL ON TABLE repositories TO gstore;
+GRANT SELECT ON TABLE repositories TO gstore;
+
+
+--
+-- Name: repositories_apps_datasets; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE repositories_apps_datasets FROM PUBLIC;
+REVOKE ALL ON TABLE repositories_apps_datasets FROM gstore;
+GRANT ALL ON TABLE repositories_apps_datasets TO gstore;
+GRANT SELECT ON TABLE repositories_apps_datasets TO gstore;
+
+
+--
+-- Name: search_dataone; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE search_dataone FROM PUBLIC;
+REVOKE ALL ON TABLE search_dataone FROM gstore;
+GRANT ALL ON TABLE search_dataone TO gstore;
+GRANT SELECT ON TABLE search_dataone TO gstore;
+
+
+--
+-- Name: shapes; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE shapes FROM PUBLIC;
+REVOKE ALL ON TABLE shapes FROM gstore;
+GRANT ALL ON TABLE shapes TO gstore;
+GRANT SELECT ON TABLE shapes TO gstore;
+
+
+--
+-- Name: states; Type: ACL; Schema: gstoredata; Owner: {{ gstoreuser }}
+--
+
+REVOKE ALL ON TABLE states FROM PUBLIC;
+REVOKE ALL ON TABLE states FROM gstore;
+GRANT ALL ON TABLE states TO gstore;
+GRANT SELECT ON TABLE states TO gstore;
+
+
+--
+-- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: gstoredata; Owner: postgres
+--
+
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA gstoredata REVOKE ALL ON TABLES  FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA gstoredata REVOKE ALL ON TABLES  FROM postgres;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA gstoredata GRANT SELECT ON TABLES  TO gstore;
+
+
+SET search_path = public, pg_catalog;
+
+--
+-- Name: DEFAULT PRIVILEGES FOR TABLES; Type: DEFAULT ACL; Schema: public; Owner: postgres
+--
+
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public REVOKE ALL ON TABLES  FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public REVOKE ALL ON TABLES  FROM postgres;
+ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT SELECT ON TABLES  TO gstore;
+
+
+
+-- insert the initial app, myapp
+INSERT INTO gstoredata.apps(name, full_name, route_key, preferred_metadata_standards)
+VALUES('MyApp', 'Initial GSTORE App', 'vwp', '{FGDC-STD-001-1998,FGDC-STD-012-2002,ISO-19115:2003}');
+
+-- insert a default category
+INSERT INTO gstoredata.categories(theme, subtheme, groupname, apps)
+VALUES('Main Theme', 'Sub Theme', 'Group Name', '{vwp}');
+
+-- insert the default quality control value
+INSERT INTO gstoredata.cv_qualitycontrollevels(code, definition)
+VALUES('-9999', 'Unknown');
+
+-- insert the default metadata standards
+INSERT INTO gstoredata.metadata_standards(name, alias, supported_formats)
+VALUES('FGDC', 'FGDC-STD-001-1998', '{xml,html}');
+
+INSERT INTO gstoredata.metadata_standards(name, alias, supported_formats)
+VALUES('FGDC-RSE', 'FGDC-STD-012-2002', '{xml,html}');
+
+INSERT INTO gstoredata.metadata_standards(name, alias, supported_formats)
+VALUES('ISO MI', 'ISO-19115:2003', '{xml,html}');
+
+INSERT INTO gstoredata.metadata_standards(name, alias, supported_formats)
+VALUES('ISO Service Identification', 'ISO-19119', '{xml}');
+
+INSERT INTO gstoredata.metadata_standards(name, alias, supported_formats)
+VALUES('ISO Feature Catalogue', 'ISO-19110', '{xml}');
+
+INSERT INTO gstoredata.metadata_standards(name, alias, supported_formats)
+VALUES('ISO Data Series', 'ISO-19115:DS', '{xml}');
+
+

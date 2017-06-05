@@ -1,0 +1,47 @@
+---
+
+- name: fix hosts
+  command: sudo su -c "echo 127.0.0.1 `hostname` >> /etc/hosts" - root
+
+- name: Install ethtool
+  apt: pkg=ethtool
+
+#- name: ethtool stuff
+#  command: ethtool --offload eth0 tso off
+
+- name: Set up authorized_keys for the ubuntu user
+  authorized_key: user="{{ sudouser }}"
+                  key="{{ item }}"
+  with_file:
+    - public_keys/hbarrett.key
+    - public_keys/bhudspeth.key
+    - public_keys/jerickson.key
+
+- name: Update packages 
+  apt: update_cache=yes
+
+- name: Install packages
+  apt: pkg=$item state=present
+  with_items:
+    - openjdk-7-jre-headless
+    - python-setuptools
+- name: copy elasticsearch-1.1.0.deb
+  copy: src=elasticsearch-1.1.0.deb dest=/usr/local/src/elasticsearch-1.1.0.deb
+- name: copy dbsetup.sh
+  copy: src=dbsetup.sh dest=/usr/local/src/dbsetup.sh
+- name: Install elasticsearch
+  command: dpkg -i /usr/local/src/elasticsearch-1.1.0.deb
+- name: setup server name
+  command: "su -c 'echo node.name: watershed >> /etc/elasticsearch/elasticsearch.yml' - root"
+- name: setup standalone config
+  command: "su -c 'echo cluster.name: watershed >> /etc/elasticsearch/elasticsearch.yml' - root"
+- name: fix node as local
+  command: "su -c 'echo node.local: true >> /etc/elasticsearch/elasticsearch.yml' - root"
+- name: set elasticsearch to start automaticly
+  command: update-rc.d elasticsearch defaults 95 10
+- name: Startup elasticsearch
+  command: service elasticsearch start
+- name: Wait for es to start
+  wait_for: port=9200 delay=5
+- name: Create index and mappings
+  command: /usr/local/src/dbsetup.sh
