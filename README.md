@@ -7,9 +7,6 @@ Ensure you have ssh keypair auth setup with the host\hosts you wish to install o
 
 Edit group_vars/all with the dbnames and passwords of your choosing.
 
-Follow either standalone or multi server setups below.
-
-
 
 
 ##Multi Server###
@@ -20,5 +17,3 @@ ansible-playbook -i hosts vwp.yml
 
 
 
-When the playbook run completes, log into the server and run "createapp" This will create the virtual env and finish the install.
-Soon this will all be done in ansible.
