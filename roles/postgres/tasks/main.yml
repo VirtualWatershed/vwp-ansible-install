@@ -3,12 +3,6 @@
 - name: fix hosts
   command: sudo su -c "echo 127.0.0.1 `hostname` >> /etc/hosts" - root
 
-#- name: Install ethtool
-#  apt: pkg=ethtool update_cache=yes
-
-#- name: ethtool stuff
-#  command: ethtool --offload eth0 tso off
-
 - name: Set up authorized_keys for the ubuntu user
   authorized_key: user="{{ sudouser }}"
                   key="{{ item }}"
@@ -55,12 +49,6 @@
 - command: tar xfv /usr/local/src/geos-3.3.9.tar -C /usr/local/src/
 - copy: src=postgis-2.1.1.tar.gz dest=/usr/local/src/postgis-2.1.1.tar.gz
 - command: tar zxfv /usr/local/src/postgis-2.1.1.tar.gz -C /usr/local/src/
-#- copy: src=gstore.sql dest=/usr/local/src/gstore.sql
-
-
-#
-#- lineinfile: dest=/etc/profile line="LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib ; export LD_LIBRARY_PATH"
-#- lineinfile: dest=/etc/apache2/envvars line="export LD_LIBRARY_PATH=:/usr/local/lib:/usr/include/libxml2"
 
 
 
@@ -109,7 +97,7 @@
 - name: Push inital dataone structure
   template: src=dataone.struct.sql.j2 dest=/usr/local/src/dataone.struct.sql mode=0740 owner=postgres group=postgres
 
-- name: Push inital dataone structure
+- name: Push inital gstore structure
   template: src=gstore.inserts.sql.j2 dest=/usr/local/src/gstore.inserts.sql mode=0740 owner=postgres group=postgres
 
 
