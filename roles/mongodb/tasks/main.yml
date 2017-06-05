@@ -1,22 +1,8 @@
 ---
 
-- name: Install ethtool
-  apt: pkg=ethtool update_cache=yes
-
-#- name: ethtool stuff
-#  command: ethtool --offload eth0 tso off
 
 - name: Update packages 
   apt: update_cache=yes
-
-- name: Set up authorized_keys for the ubuntu user
-  authorized_key: user="{{ sudouser }}"
-                  key="{{ item }}"
-  with_file:
-    - public_keys/hbarrett.key
-    - public_keys/bhudspeth.key
-    - public_keys/jerickson.key
-
 
 - name: Create directories
   command: mkdir -p /opt/mongodb /data/db /var/lib/mongodb /var/log/mongodb /opt/mongoparts

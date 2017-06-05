@@ -3,15 +3,6 @@
 - name: fix hosts
   command: sudo su -c "echo 127.0.0.1 `hostname` >> /etc/hosts" - root
 
-- name: Set up authorized_keys for the ubuntu user
-  authorized_key: user="{{ sudouser }}"
-                  key="{{ item }}"
-  with_file:
-    - public_keys/hbarrett.key
-    - public_keys/bhudspeth.key
-    - public_keys/jerickson.key
-
-
 - name: Update packages 
   apt: update_cache=yes
 

@@ -85,31 +85,6 @@
 - copy: src=utils.py dest=/usr/local/src/utils.py
 - copy: src=apache.template dest=/opt/templates/
 - copy: src=createapp dest=/usr/bin/createapp
-#- copy: src=dbmpasswd dest=/etc/dbmpasswd
-
-#HB not sure about this...
-#- copy: src=virtual-watershed.tar.gz dest=/opt/templates/virtual-watershed.tar.gz
-#- command: tar zxfv /opt/templates/virtual-watershed.tar.gz -C /opt/templates/ 
-#- name: symlink gstore
-#  file: src=/opt/templates/virtual-watershed/gstore_v3 dest=/opt/templates/gstore_v3 state=link
-
-#- name: checkout gstore
-#  subversion: repo=https://edacsvn.unm.edu/virtual-watershed/gstore_v3 dest=/opt/templates/gstore_v3
-
-#- name: svn
-#  subversion: repo=https://edacsvn.unm.edu/gstore-public/sample_datasets dest=/geodata/sample_datasets
-
-#- name: create post_datasets.py
-#  template: src=post_datasets.py.j2 dest=/geodata/sample_datasets/post_datasets.py mode=0755 owner=root group=root
-
-#- name: create convert_file_to_vector.py
-#  template: src=convert_file_to_vector.py.j2 dest=/geodata/sample_datasets/convert_file_to_vector.py mode=0755 owner=root group=root
-
-#- name: exclude convert and post
-#  shell: $item chdir=/geodata/sample_datasets
-#  with_items:
-#    - svn propset svn:ignore convert_file_to_vector.py .
-#    - svn propset svn:ignore post_datasets.py .
 
 - name: set permissions for .cache
   file: path=/var/www/.cache state=directory recurse=yes owner=www-data group=www-data
@@ -126,16 +101,9 @@
 - name: set permissions for clusterdata
   file: path=/clusterdata state=directory recurse=yes owner=www-data group="{{ sudouser }}"
 
-#- name: set permissions for /etc/dbmpasswd
-#  file: path=/etc/dbmpasswd state=file owner=www-data group="{{ sudouser }}"
-
 - name: create development.ini
   template: src=development.ini.j2 dest=/opt/templates/gstore_v3/development.ini mode=0755 owner=root group=root
 
-#- name: exclude development.ini
-#  shell: $item chdir=/opt/templates/gstore_v3
-#  with_items:
-#    - svn propset svn:ignore "*.ini" .
 
 - lineinfile: dest=/etc/profile line="LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib ; export LD_LIBRARY_PATH"
 - lineinfile: dest=/etc/apache2/envvars line="export LD_LIBRARY_PATH=:/usr/local/lib:/usr/include/libxml2"
@@ -198,18 +166,9 @@
     - make >> build.log
     - make install >> build.log
 
-#LOL
-
-
-#- name: set permissions on logs dir 
-#  file: path=/opt/modwsgi/gstore_v3_env/gstore_v3/logs state=directory recurse=yes owner="{{ sudouser }}" group=www-data mode=0775
-
 - name: setup LD_LIBRARY_PATH
   command: "su -c 'echo export LD_LIBRARY_PATH=:/usr/local/lib >> /home/{{ sudouser }}/.bashrc' - root"
 
-#install gstore
-#- name: Update packages 
-#  apt: update_cache=yes
 
 - name: Install packages
   apt: pkg=$item state=present
@@ -295,30 +254,14 @@
   command: cp /usr/local/src/mapserver-6.4.1/build/mapscript/python/_mapscript.so /opt/modwsgi/gstore_v3_env/lib/python2.7/site-packages/_mapscript.so
 
 
-#- name: move gstore
-#  command: mv /opt/git/gstore_v3 /opt/modwsgi/gstore_v3_env/gstore_v3
-
 - name: Create pyramid.wsgi
   command: cp /opt/templates/pyramid.wsgi.template /opt/modwsgi/gstore_v3_env/pyramid.wsgi
 
 - name: Create gstore Apache config
   command: cp /opt/templates/apache.template /etc/apache2/sites-available/gstore_v3.conf
 
-#- name: Delete dir
-#  command: rm -rf /opt/modwsgi/gstore_v3_env/gstore_v3
-
-#- name: Creat symlinks
-#  file: src=/opt/git/gstore_v3 dest=/opt/modwsgi/gstore_v3_env/gstore_v3 state=link
-
-#- name: Run pcreate
-#  command: bin/pcreate -s alchemy gstore_v3
-#  args:
 - copy: src=pcreate.sh dest=/opt/pcreate.sh
 - command: bash /opt/pcreate.sh
-
-
-#- name: Run develop
-#  command: /opt/modwsgi/gstore_v3_env/bin/python /opt/modwsgi/gstore_v3_env/gstore_v3/setup.py develop
 
 - name: Delete dir
   command: rm -rf /opt/modwsgi/gstore_v3_env/gstore_v3
