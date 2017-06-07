@@ -8,7 +8,6 @@ Ensure you have ssh keypair auth setup with the host\hosts you wish to install o
 Edit group_vars/all with the dbnames and passwords of your choosing.
 
 
-
 ##Multi Server###
 Edit the "hosts" inventory file by changing the IP addresses to the assicated addresses of the target servers.
 
