@@ -180,8 +180,7 @@
 
 
 - name: Get updated files from git repository
-  git: repo=https://{{ git_username }}:{{ git_password }}@github.com/tri-state-epscor/vw-gstore.git dest=/opt/git/
-
+  git: repo=https://{{ git_username }}:{{ git_password }}@github.com/VirtualWatershed/vw-gstore.git dest=/opt/git/ version=Ubuntu14.04
 
 
 - name: Manually create the initial virtualenv
@@ -280,6 +279,16 @@
   command: chown -R ubuntu:ubuntu /opt/modwsgi/gstore_v3_env
 - name: Copy development.ini
   command: cp /opt/templates/gstore_v3/development.ini /opt/modwsgi/gstore_v3_env/gstore_v3/development.ini
+
+
+- name: enable Apache ssl module
+  command: a2enmod ssl
+
+- name: enable ssl website config
+  shell: $item chdir=/etc/apache2/sites-available/
+  with_items:
+    - a2ensite default-ssl.conf
+
 - name: Restart apache
   command: /etc/init.d/apache2 restart
 
