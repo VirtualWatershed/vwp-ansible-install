@@ -4,5 +4,5 @@ gstoreuser: gstore
 gstorepassword: secretpassword
 gstoredbname: gstore3
 dataonedbname: dataone
-sudouser: ubuntu
+sudouser: centos
 

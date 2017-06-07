@@ -1,30 +1,26 @@
 ---
 
-- name: fix hosts
-  command: sudo su -c "echo 127.0.0.1 `hostname` >> /etc/hosts" - root
+- name: install the latest version of OpenJDK
+  yum:
+    name: java-1.8.0-openjdk.x86_64
+    state: latest
 
-- name: Update packages 
-  apt: update_cache=yes
-
-- name: Install packages
-  apt: pkg=$item state=present
-  with_items:
-    - openjdk-7-jre-headless
-    - python-setuptools
-- name: copy elasticsearch-1.1.0.deb
-  copy: src=elasticsearch-1.1.0.deb dest=/usr/local/src/elasticsearch-1.1.0.deb
+- name: copy elasticsearch-1.1.0.noarch.rpm
+  copy: src=elasticsearch-1.1.0.noarch.rpm dest=/usr/local/src/elasticsearch-1.1.0.noarch.rpm
 - name: copy dbsetup.sh
   copy: src=dbsetup.sh dest=/usr/local/src/dbsetup.sh
 - name: Install elasticsearch
-  command: dpkg -i /usr/local/src/elasticsearch-1.1.0.deb
+  command: rpm -i /usr/local/src/elasticsearch-1.1.0.noarch.rpm
+
+
 - name: setup server name
-  command: "su -c 'echo node.name: watershed >> /etc/elasticsearch/elasticsearch.yml' - root"
+  command: "su -c 'echo node.name: watersheddev >> /etc/elasticsearch/elasticsearch.yml' - root"
 - name: setup standalone config
-  command: "su -c 'echo cluster.name: watershed >> /etc/elasticsearch/elasticsearch.yml' - root"
+  command: "su -c 'echo cluster.name: watersheddev >> /etc/elasticsearch/elasticsearch.yml' - root"
 - name: fix node as local
   command: "su -c 'echo node.local: true >> /etc/elasticsearch/elasticsearch.yml' - root"
 - name: set elasticsearch to start automaticly
-  command: update-rc.d elasticsearch defaults 95 10
+  command: systemctl enable elasticsearch.service
 - name: Startup elasticsearch
   command: service elasticsearch start
 - name: Wait for es to start
