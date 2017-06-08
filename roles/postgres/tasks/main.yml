@@ -1,83 +1,65 @@
 ---
 
-- name: fix hosts
-  command: sudo su -c "echo 127.0.0.1 `hostname` >> /etc/hosts" - root
 
-- name: Update packages 
-  apt: update_cache=yes
+- name: install repo
+  command: rpm -ivh https://download.postgresql.org/pub/repos/yum/9.6/redhat/rhel-7-x86_64/pgdg-centos96-9.6-3.noarch.rpm
 
-- name: Install packages
-  apt: pkg=$item state=present
+
+- name: Install PostgreSQL packages
+  yum: pkg=$item state=present
   with_items:
-    - postgresql
-    - postgresql-9.3-postgis-2.1
-    - postgis
-    - postgresql-client-9.3
-    - postgresql-contrib-9.3
-    - build-essential
-    - libpq-dev
-    - postgresql-server-dev-9.3
-    - libxml2-dev
-    - libgeos-dev
-    - libproj-dev
-    - gdal-bin
-    - libgdal-dev
-    - bzip2
-    - gdal-bin
-    - ntp
+    - postgresql96
+    - postgresql96-server
+    - postgresql96-libs
+    - postgresql96-contrib
+    - postgresql96-devel
+
+
+- name: initdb
+  command: /usr/pgsql-9.6/bin/postgresql96-setup initdb
+
+- name: restart postgres
+  service: name=postgresql-9.6 state=restarted
+
+- name: Install PostGIS packages
+  yum: pkg=$item state=present
+  with_items:
+    - epel-release
+    - postgis2_96
+    - postgis2_96-client
+
+
+- name: Display all variables/facts known for a host
+  debug:
+    var: hostvars[inventory_hostname]
+    verbosity: 4
 
 - name: Push pg_hba configuration
-  template: src=pg_hba.conf.j2 dest=/etc/postgresql/9.3/main/pg_hba.conf mode=0640 owner=postgres group=postgres
+  template: src=pg_hba.conf.j2 dest=/var/lib/pgsql/9.6/data/pg_hba.conf mode=0640 owner=postgres group=postgres
 - name: Push postgres configuration
-  template: src=postgresql.conf.j2 dest=/etc/postgresql/9.3/main/postgresql.conf mode=0644 owner=postgres group=postgres
+  template: src=postgresql.conf.j2 dest=/var/lib/pgsql/9.6/data/postgresql.conf mode=0644 owner=postgres group=postgres
 - name: restart postgres
-  service: name=postgresql state=restarted
+  service: name=postgresql-9.6 state=restarted
 
-# Copy files
-
-- copy: src=geos-3.3.9.tar.bz2 dest=/usr/local/src/geos-3.3.9.tar.bz2
-- command: bunzip2 /usr/local/src/geos-3.3.9.tar.bz2
-- command: tar xfv /usr/local/src/geos-3.3.9.tar -C /usr/local/src/
-- copy: src=postgis-2.1.1.tar.gz dest=/usr/local/src/postgis-2.1.1.tar.gz
-- command: tar zxfv /usr/local/src/postgis-2.1.1.tar.gz -C /usr/local/src/
-
-
-
-- name: Build geos
-  shell: $item chdir=/usr/local/src/geos-3.3.9
-  with_items:
-    - ./configure >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-
-- name: Build postgis
-  shell: $item chdir=/usr/local/src/postgis-2.1.1
-  with_items:
-    - ./configure >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-
-# setup db
 - name: Create gstore3 DB
   command: su -c "createdb {{ gstoredbname }}" - postgres
 - name: Create dataone DB
   command: su -c "createdb {{ dataonedbname }}" - postgres
 - name: postgis setup
-  command: su -c "psql -d {{ gstoredbname }} -f /usr/local/src/postgis-2.1.1/extensions/postgis/sql_bits/postgis.sql" - postgres
+  command: su -c "psql -d {{ gstoredbname }} -f /usr/pgsql-9.6/share/contrib/postgis-2.3/postgis.sql" - postgres
 - name: postgis_comments setup 
-  command: su -c "psql -d {{ gstoredbname }} -f /usr/local/src/postgis-2.1.1/extensions/postgis/sql_bits/postgis_comments.sql" - postgres
+  command: su -c "psql -d {{ gstoredbname }} -f /usr/pgsql-9.6/share/contrib/postgis-2.3/postgis_comments.sql" - postgres
 - name: spatial_ref_sys setup
-  command: su -c "psql -d {{ gstoredbname }} -f /usr/local/src/postgis-2.1.1/extensions/postgis/sql_bits/spatial_ref_sys.sql" - postgres
+  command: su -c "psql -d {{ gstoredbname }} -f /usr/pgsql-9.6/share/contrib/postgis-2.3/spatial_ref_sys.sql" - postgres
 - name: rtpostgis setup
-  command: su -c "psql -d {{ gstoredbname }} -f /usr/local/src/postgis-2.1.1/extensions/postgis/sql_bits/rtpostgis.sql" - postgres
+  command: su -c "psql -d {{ gstoredbname }} -f /usr/pgsql-9.6/share/contrib/postgis-2.3/rtpostgis.sql" - postgres
 - name: raster_comments setup
-  command: su -c "psql -d {{ gstoredbname }} -f /usr/local/src/postgis-2.1.1/extensions/postgis/sql_bits/raster_comments.sql" - postgres
+  command: su -c "psql -d {{ gstoredbname }} -f /usr/pgsql-9.6/share/contrib/postgis-2.3/raster_comments.sql" - postgres
 - name: topology setup
-  command: su -c "psql -d {{ gstoredbname }} -f /usr/local/src/postgis-2.1.1/topology/topology.sql" - postgres
+  command: su -c "psql -d {{ gstoredbname }} -f /usr/pgsql-9.6/share/contrib/postgis-2.3/topology.sql" - postgres
 - name: topology_comments setup
-  command: su -c "psql -d {{ gstoredbname }} -f /usr/local/src/postgis-2.1.1/extensions/postgis_topology/sql_bits/topology_comments.sql" - postgres
+  command: su -c "psql -d {{ gstoredbname }} -f /usr/pgsql-9.6/share/contrib/postgis-2.3/topology_comments.sql" - postgres
+
 
 - name: Push inital gstore sql
   template: src=gstore.sql.j2 dest=/usr/local/src/gstore.sql mode=0740 owner=postgres group=postgres
