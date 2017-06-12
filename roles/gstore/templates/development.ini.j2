@@ -14,7 +14,7 @@ pyramid.includes =
 #readwrite postgres
 #sqlalchemy.url = postgresql://my_user:my_password@my_host:my_port/my_database
 {% for host in groups['postgres'] %}
-sqlalchemy.url = postgresql://{{ gstoreuser }}:{{ gstorepassword }}@{{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}:5432/{{ gstoredbname }}
+sqlalchemy.url = postgresql://{{ gstoreuser }}:{{ gstorepassword }}@{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}:5432/{{ gstoredbname }}
 {% endfor %}
 
 
@@ -22,7 +22,7 @@ sqlalchemy.url = postgresql://{{ gstoreuser }}:{{ gstorepassword }}@{{ hostvars[
 #mongo_uri = mongodb://my_user:my_password@my_host:my_port/my_database
 
 {% for host in groups['mongodb'] %}
-mongo_uri = mongodb://{{ gstoreuser }}:{{ gstorepassword }}@{{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}:27017/{{ gstoredbname }}
+mongo_uri = mongodb://{{ gstoreuser }}:{{ gstorepassword }}@{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}:27017/{{ gstoredbname }}
 {% endfor %}
 
 
@@ -44,7 +44,7 @@ mongo_inactive_collection = inactives
 #NOTE: this is not (and should not) be the same db as the main datastore
 #dataone.url = postgresql://my_user:my_password@my_host:my_port/my_dataone_database
 {% for host in groups['postgres'] %}
-dataone.url = postgresql://{{ gstoreuser }}:{{ gstorepassword }}@{{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}:5432/{{ dataonedbname }}
+dataone.url = postgresql://{{ gstoreuser }}:{{ gstorepassword }}@{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}:5432/{{ dataonedbname }}
 {% endfor %}
 
 
@@ -60,7 +60,7 @@ swift_auth= Example(https://edaccloud.unm.edu/identity/v2.0/tokens)
 #elasticsearch
 
 {% for host in groups['elasticsearch'] %}
-es_root = http://{{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}:9200/
+es_root = http://{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}:9200/
 es_dataset_index = gstore
 es_user = {{ gstoreuser }}:{{ gstorepassword }}
 es_dbuser= {{ gstoreuser }}
@@ -96,11 +96,11 @@ OGC_SRS = EPSG:4326,EPSG:4269,EPSG:4267,EPSG:26913,EPSG:26912,EPSG:26914,EPSG:26
 #host url for building metadata links, etc
 #BALANCER_URL = http://app_host
 {% for host in groups['gstore'] %}
-BALANCER_URL = http://{{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}     
+BALANCER_URL = http://{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}     
 {% endfor %}
 
 {% for host in groups['gstore'] %}
-BALANCER_URL_SECURE = https://{{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}
+BALANCER_URL_SECURE = https://{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}
 {% endfor %}
 
 #for dev 
@@ -111,7 +111,7 @@ BALANCER_URL_SECURE = https://{{ hostvars[host]['ansible_eth0']['ipv4']['address
 #for the mapper
 #MEDIA_URL = http://app_host
 {% for host in groups['gstore'] %}
-MEDIA_URL = http://{{ hostvars[host]['ansible_eth0']['ipv4']['address'] }}
+MEDIA_URL = http://{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}
 {% endfor %}
 
 #path to the cache parent

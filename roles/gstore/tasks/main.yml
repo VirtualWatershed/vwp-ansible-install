@@ -1,187 +1,5 @@
 ---
 
-- name: Update packages 
-  apt: update_cache=yes
-
-- name: Install packages
-  apt: pkg=$item state=present
-  with_items:
-    - python2.7
-    - python-virtualenv
-    - virtualenvwrapper
-    - build-essential
-    - libfreetype6-dev
-    - libpng12-dev
-    - libgif-dev
-    - libjpeg8-dev
-    - libhdf4-alt-dev
-    - libopenjpeg-dev
-    - libnetcdf-dev
-    - unzip
-    - curl
-    - libcurl4-openssl-dev
-    - mercurial
-    - cmake-curses-gui
-    - cmake
-    - libopenmpi-dev
-    - libgd2-xpm-dev
-    - build-essential
-    - libhdf5-serial-dev
-    - libxml2-dev
-    - libpq-dev
-    - apache2
-    - python-dev
-    - libapache2-mod-wsgi
-    - nfs-common
-    - libxslt1-dev
-    - libjpeg8
-    - libfreetype6
-    - libfreetype6-dev
-    - libjpeg-turbo8-dev
-    - cifs-utils
-    - libfribidi-dev
-    - libcairo-dev
-    - libfcgi-dev
-    - libgeos-dev
-    - swig
-    - librsvg2-dev
-    - subversion
-    - libsaxonb-java
-    - libsaxon-java
-    - java-common
-    - openjdk-7-jre
-
-
-- name: Create directories
-  command: mkdir -p /var/www/.python-eggs /opt/modwsgi /opt/templates /geodata/watershed-data /clusterdata/gstore/dataone/datasets /clusterdata/gstore/dataone/packages /clusterdata/gstore/dataone/metadata /clusterdata/gstore/tmp /clusterdata/gstore/formats /clusterdata/gstore/tileindexes /clusterdata/gstore/maps/base/shapes /clusterdata/gstore/provenance /var/www/.cache /opt/templates/gstore_v3
-
-- group: name=webdev gid=9999 state=present
-- action: user name=www-data groups=webdev append=true
-
-- name: Creat symlinks
-  file: src=/usr/lib/x86_64-linux-gnu/libjpeg.so dest=/usr/lib/libjpeg.so state=link
-  file: src=/usr/lib/x86_64-linux-gnu/libfreetype.so dest=/usr/lib/libfreetype.so state=link
-  file: src=/usr/lib/x86_64-linux-gnu/libz.so dest=/usr/lib/libz.so state=link
-
-- copy: src=gdal-2.2.0.tar.gz dest=/usr/local/src/gdal-2.2.0.tar.gz
-- command: tar zxfv /usr/local/src/gdal-2.2.0.tar.gz -C /usr/local/src/
-- copy: src=libgd-2.1.0.tar.gz dest=/usr/local/src/libgd-2.1.0.tar.gz
-- command: tar zxfv /usr/local/src/libgd-2.1.0.tar.gz -C /usr/local/src/
-- copy: src=ecwjp.tar.gz dest=/usr/local/src/ecwjp.tar.gz
-- command: tar zxfv /usr/local/src/ecwjp.tar.gz -C /usr/local/src/
-- copy: src=mapserver-6.4.1.tar.gz dest=/usr/local/src/mapserver-6.4.1.tar.gz
-- command: tar zxfv /usr/local/src/mapserver-6.4.1.tar.gz -C /usr/local/src/
-- copy: src=proj-4.8.0.tar.gz dest=/usr/local/src/proj-4.8.0.tar.gz
-- command: tar zxfv /usr/local/src/proj-4.8.0.tar.gz -C /usr/local/src/
-- copy: src=netcdf-4.3.1.1.tar.gz dest=/usr/local/src/netcdf-4.3.1.1.tar.gz
-- command: tar zxfv /usr/local/src/netcdf-4.3.1.1.tar.gz -C /usr/local/src/
-- copy: src=openjpeg-2.0.0.tar.gz dest=/usr/local/src/openjpeg-2.0.0.tar.gz
-- command: tar zxfv /usr/local/src/openjpeg-2.0.0.tar.gz -C /usr/local/src/
-- copy: src=xerces-c-3.1.1.tar.gz dest=/usr/local/src/xerces-c-3.1.1.tar.gz
-- command: tar zxfv /usr/local/src/xerces-c-3.1.1.tar.gz -C /usr/local/src/
-- copy: src=map_templates.tar.gz dest=/tmp/map_templates.tar.gz          
-- command: tar zxfv /tmp/map_templates.tar.gz -C /clusterdata/gstore/
-- copy: src=pyramid.wsgi.template dest=/opt/templates/
-- copy: src=utils.py dest=/usr/local/src/utils.py
-- copy: src=apache.template dest=/opt/templates/
-- copy: src=createapp dest=/usr/bin/createapp
-
-- name: set permissions for .cache
-  file: path=/var/www/.cache state=directory recurse=yes owner=www-data group=www-data
-
-- name: set permissions for geodata
-  file: path=/geodata state=directory recurse=yes owner="{{ sudouser }}" group=www-data 
-
-- name: set permissions for geodata
-  file: path=/geodata/watershed-data state=directory recurse=yes owner=www-data group=www-data
-
-- name: set permissions for python-eggs
-  file: path=/var/www/.python-eggs/ state=directory recurse=yes owner="www-data" group=www-data
-
-- name: set permissions for clusterdata
-  file: path=/clusterdata state=directory recurse=yes owner=www-data group="{{ sudouser }}"
-
-- name: create development.ini
-  template: src=development.ini.j2 dest=/opt/templates/gstore_v3/development.ini mode=0755 owner=root group=root
-
-
-- lineinfile: dest=/etc/profile line="LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib ; export LD_LIBRARY_PATH"
-- lineinfile: dest=/etc/apache2/envvars line="export LD_LIBRARY_PATH=:/usr/local/lib:/usr/include/libxml2"
-
-- name: symlink ecw library
-  file: src=/usr/local/src/ecwjp2_sdk/redistributable/x64/libNCSEcw.so.5.0.1 dest=/lib/libNCSEcw.so state=link
-
-
-- name: Build proj
-  shell: $item chdir=/usr/local/src/proj-4.8.0
-  with_items:
-    - ./configure >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-
-- name: build gd
-  shell: $item chdir=/usr/local/src/libgd-2.1.0
-  with_items:
-    - cmake . >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-- name: build netcdf
-  shell: $item chdir=/usr/local/src/netcdf-4.3.1.1
-  with_items:
-    - ./configure >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-- name: build xerces
-  shell: $item chdir=/usr/local/src/xerces-c-3.1.1
-  with_items:
-    - ./configure >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-
-- name: build openjpeg
-  shell: $item chdir=/usr/local/src/openjpeg-2.0.0
-  with_items:
-    - cmake . >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-- name: Build gdal
-  shell: $item chdir=/usr/local/src/gdal-2.2.0
-  with_items:
-    - ./configure --with-netcdf --with-ecw=/usr/local/src/ecwjp2_sdk/ --with-curl=/usr/bin/curl-config --with-hdf5=/user/include/ --with-openjpeg --with-spatialite >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-- name: Create build dir
-  command: mkdir /usr/local/src/mapserver-6.4.1/build
-
-- name: build mapserver
-  shell: $item chdir=/usr/local/src/mapserver-6.4.1/build
-  with_items:
-    - cmake .. -DWITH_KML=1 -DWITH_GD=1 -DWITH_RSVG=1 -DWITH_CLIENT_WMS=1 -DWITH_CLIENT_WFS=1 -DWITH_CURL=1 -DWITH_PYTHON=1 -DWITH_PHP=0 >> build.log
-    - make >> build.log
-    - make install >> build.log
-
-- name: setup LD_LIBRARY_PATH
-  command: "su -c 'echo export LD_LIBRARY_PATH=:/usr/local/lib >> /home/{{ sudouser }}/.bashrc' - root"
-
-
-- name: Install packages
-  apt: pkg=$item state=present
-  with_items:
-    - git
-
-- name: Create directories
-  command: mkdir -p /opt/git/
-
-
-- name: Get updated files from git repository
-  git: repo=https://{{ git_username }}:{{ git_password }}@github.com/tri-state-epscor/vw-gstore.git dest=/opt/git/
-
 
 
 - name: Manually create the initial virtualenv
@@ -190,7 +8,7 @@
 - name: upgrade setuptools
   command: pip install --upgrade setuptools pip
 
-- name: Install pyramid==1.5.2
+- name: Install pyramid
   easy_install:
     name=pyramid==1.5.2
     virtualenv=/opt/modwsgi/gstore_v3_env
@@ -214,14 +32,19 @@
   easy_install:
     name=psycopg2
     virtualenv=/opt/modwsgi/gstore_v3_env
+  environment:
+    PATH: /usr/pgsql-9.6/bin:{{ ansible_env.PATH }}
 - name: Install django-hstore
   easy_install:
     name=django-hstore
     virtualenv=/opt/modwsgi/gstore_v3_env
 - name: Install gdal
   easy_install:
-    name=gdal
+    name=gdal==1.9.0
     virtualenv=/opt/modwsgi/gstore_v3_env
+  environment:
+    PATH: /usr/local/bin/:{{ ansible_env.PATH }}
+
 - name: Install Pillow
   easy_install:
     name=Pillow
@@ -238,7 +61,7 @@
   easy_install:
     name=requests
     virtualenv=/opt/modwsgi/gstore_v3_env
-- name: Install sqlalchemy==0.9.8
+- name: Install sqlalchemy
   easy_install:
     name=sqlalchemy==0.9.8
     virtualenv=/opt/modwsgi/gstore_v3_env
@@ -249,16 +72,16 @@
 
 
 
-- name: Copy mapscript.py             
+- name: Copy mapscript.py
   command: cp /usr/local/src/mapserver-6.4.1/build/mapscript/python/mapscript.py /opt/modwsgi/gstore_v3_env/lib/python2.7/site-packages/
   command: cp /usr/local/src/mapserver-6.4.1/build/mapscript/python/_mapscript.so /opt/modwsgi/gstore_v3_env/lib/python2.7/site-packages/_mapscript.so
+
 
 
 - name: Create pyramid.wsgi
   command: cp /opt/templates/pyramid.wsgi.template /opt/modwsgi/gstore_v3_env/pyramid.wsgi
 
-- name: Create gstore Apache config
-  command: cp /opt/templates/apache.template /etc/apache2/sites-available/gstore_v3.conf
+- copy: src=apache.template dest=/etc/httpd/conf/httpd.conf
 
 - copy: src=pcreate.sh dest=/opt/pcreate.sh
 - command: bash /opt/pcreate.sh
@@ -272,15 +95,17 @@
 
 - name: Set permissions on pyramid.wsgi
   command: chmod 755 /opt/modwsgi/gstore_v3_env/pyramid.wsgi
-- name: Enable new site
-  command: a2ensite gstore_v3
+#- name: Enable new site
+#  command: a2ensite gstore_v3
 - name: Set perms in virutal env
   command: chmod -R g+rwx /opt/modwsgi/gstore_v3_env
 - name: Set ownership on virtual env
-  command: chown -R ubuntu:ubuntu /opt/modwsgi/gstore_v3_env
+  command: chown -R {{ sudouser }}:{{ sudouser }} /opt/modwsgi/gstore_v3_env
 - name: Copy development.ini
   command: cp /opt/templates/gstore_v3/development.ini /opt/modwsgi/gstore_v3_env/gstore_v3/development.ini
 - name: Restart apache
-  command: /etc/init.d/apache2 restart
+  command: service httpd restart
+
+
 
 
