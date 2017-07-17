@@ -1,7 +1,7 @@
 ## Standalone GSTORE Deployment
 
 - Requires Ansible 1.2 or newer
-- Expects Ubuntu 14.04 hosts
+- Expects CentOS7 hosts
 
 Ensure you have ssh keypair auth setup with the host\hosts you wish to install on.
 
